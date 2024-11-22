@@ -1,15 +1,26 @@
 import cv2
+import os
 import numpy as np
 
+
 # Step 1: Load Images
-frame1 = cv2.imread("/home/andre/VARM-mini-project/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.580023_left.jpg")
-frame2 = cv2.imread("/home/andre/VARM-mini-project/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.680019_left.jpg")
+frame_1_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.580023_left.jpg"
+frame_2_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.680019_left.jpg"
 
-# frame1 = cv2.imread("/home/andre/VARM-mini-project/datasets/kitti/05/image_0/000000.png")
-# frame2 = cv2.imread("/home/andre/VARM-mini-project/datasets/kitti/05/image_0/000002.png")
+# frame_1_relative_folder = "/datasets/kitti/05/image_0/000000.png"
+# frame_2_relative_folder = "datasets/kitti/05/image_0/000002.png"
 
-# frame1 = cv2.imread("/home/andre/VARM-mini-project/datasets/parking/images/img_00000.png")
-# frame2 = cv2.imread("/home/andre/VARM-mini-project/datasets/parking/images/img_00002.png")
+# frame_1_relative_folder = "/datasets/parking/images/img_00000.png"
+# frame_2_relative_folder = "/datasets/parking/images/img_00002.png"
+
+frame1_folder = os.path.join(os.path.dirname(__file__) + frame_1_relative_folder)
+fram2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
+
+# import pdb; pdb.set_trace() # used for debugging
+
+frame1 = cv2.imread(frame1_folder)
+frame2 = cv2.imread(fram2_folder)
+
 
 # Step 2: Convert to Grayscale
 gray1 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
@@ -19,7 +30,7 @@ gray2 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
 features = cv2.goodFeaturesToTrack(
     gray1,
     maxCorners=100,  # Maximum number of corners to detect
-    qualityLevel=0.01,  # Minimum quality of corners
+    qualityLevel=0.05,  # Minimum quality of corners
     minDistance=10,  # Minimum distance between corners
 )
 
@@ -72,6 +83,8 @@ essential_mat, inliers = cv2.findEssentialMat(
 # Step 7: Recover Pose
 _, R, t, mask = cv2.recoverPose(essential_mat, valid_features, valid_features_next, K)
 
+print("R: ", R)
+print("t: ", t)
 # Step 8: Triangulate Points
 # Define projection matrices for the two views
 proj_matrix1 = np.dot(K, np.hstack((np.eye(3), np.zeros((3, 1)))))  # First camera
@@ -81,7 +94,8 @@ proj_matrix2 = np.dot(K, np.hstack((R, t)))  # Second camera
 valid_features = valid_features[mask.ravel() == 255].astype(np.float32)
 valid_features_next = valid_features_next[mask.ravel() == 255].astype(np.float32)
 
-import pdb; pdb.set_trace() # used for debugging
+# import pdb; pdb.set_trace() # used for debugging
+
 
 points_4d_homogeneous = cv2.triangulatePoints(proj_matrix1, proj_matrix2, valid_features.T, valid_features_next.T)
 
