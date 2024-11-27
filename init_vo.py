@@ -4,14 +4,14 @@ import numpy as np
 
 
 # Step 1: Load Images
-frame_1_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.580023_left.jpg"
-frame_2_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.680019_left.jpg"
+# frame_1_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.580023_left.jpg"
+# frame_2_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.680019_left.jpg"
 
 # frame_1_relative_folder = "/datasets/kitti/05/image_0/000000.png"
 # frame_2_relative_folder = "datasets/kitti/05/image_0/000002.png"
 
-# frame_1_relative_folder = "/datasets/parking/images/img_00000.png"
-# frame_2_relative_folder = "/datasets/parking/images/img_00002.png"
+frame_1_relative_folder = "/datasets/parking/images/img_00000.png"
+frame_2_relative_folder = "/datasets/parking/images/img_00002.png"
 
 frame1_folder = os.path.join(os.path.dirname(__file__) + frame_1_relative_folder)
 fram2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
@@ -29,8 +29,8 @@ gray2 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
 # Step 3: Detect Good Features to Track in the First Image
 features = cv2.goodFeaturesToTrack(
     gray1,
-    maxCorners=100,  # Maximum number of corners to detect
-    qualityLevel=0.05,  # Minimum quality of corners
+    maxCorners=300,  # Maximum number of corners to detect
+    qualityLevel=0.1,  # Minimum quality of corners
     minDistance=10,  # Minimum distance between corners
 )
 
@@ -107,4 +107,5 @@ valid = np.sum(points_3d[2,:] > 0)
 # Step 8: Visualize or Save the 3D Points
 print("Triangulated 3D points:")
 print(points_3d.T)  # Transpose to get points in rows
+
 
