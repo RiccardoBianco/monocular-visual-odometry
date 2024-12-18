@@ -165,22 +165,22 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
             X = X[inlier_mask]
             R_new, _ = cv2.Rodrigues(rvec)
             t_new = tvec
-            if (t_new[0] > 30):
-                print("I'm here")
+
             print("PnP successful...printing new pose:")
             print("Rotation matrix: \n", R_new)
             print("Translation vector: \n", t_new)
 
     # 4. If not enough landmarks, add new candidate keypoints
     if X.shape[0] < min_landmarks:
-        new_corners = cv2.goodFeaturesToTrack(current_frame, maxCorners=200, qualityLevel=0.01, minDistance=7)
+        new_corners = cv2.goodFeaturesToTrack(current_frame, maxCorners=1000, qualityLevel=0.1, minDistance=5)
         if new_corners is not None:
             if C.shape[0] > 0:
                 existing_points = np.vstack((P.reshape(-1,2), C.reshape(-1,2)))
             else:
                 existing_points = P.reshape(-1,2)
 
-            dist_threshold = 5
+            # Keep only the new corners that are not too close to existing points
+            dist_threshold = 3
             keep_idx = []
             for i, cpt in enumerate(new_corners):
                 c_pt = cpt.ravel()
@@ -199,6 +199,9 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
                 else:
                     C = new_candidates
 
+                # Store in F the first observation of the new candidates
+                # N.B. This is bcs C is going to be updated with the new positions
+                #      but we need to keep track of the first observation
                 if F_first.shape[0] > 0:
                     F_first = np.vstack((F_first, new_candidates))
                 else:
@@ -226,9 +229,9 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
             if angle > min_baseline_angle:
                 P_first = K @ np.hstack((R_f, t_f))
                 P_current = K @ np.hstack((R_new, t_new))
-                print("Triangulating candidate point ", i)
                 pts4D = cv2.triangulatePoints(P_first, P_current, c_first.T, c_current.T)
                 X_new = (pts4D[:3] / pts4D[3]).T
+                # Update database
                 P = np.vstack((P, c_current.reshape(1,1,2)))
                 X = np.vstack((X, X_new))
                 good_for_triangulation.append(i)
@@ -291,7 +294,7 @@ if __name__ == "__main__":
             frame_2_relative_folder = f"/datasets/parking/images/img_00{i}.png"
 
         frame2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
-        state = vo_continuous(frame2_folder, K, state, min_landmarks=50, min_baseline_angle=1.0)
+        state = vo_continuous(frame2_folder, K, state, min_landmarks=50, min_baseline_angle=10.0)
 
     plt.show()  # Show all plots at once
 
