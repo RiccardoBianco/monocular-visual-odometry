@@ -3,6 +3,7 @@ import cv2
 import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from dashboard import create_dashboard, update_dashboard
 
 def vo_bootstrap(frame1_path, frame2_path, K):
     # Load frames
@@ -252,6 +253,11 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
 
     return state
 
+######################################################################
+##############################  Dashboard  ############################
+######################################################################
+
+
 
 if __name__ == "__main__":
     frame_1_relative_folder = "/datasets/parking/images/img_00000.png"
@@ -280,6 +286,13 @@ if __name__ == "__main__":
         'F': np.empty((0,1,2), dtype=np.float32), # No first observations for candidates yet
         'T': [] # No poses for candidates yet
     }
+    
+    camera_positions = []
+    landmark_counts = []
+
+    # Initialize dashboard
+    fig, axes = create_dashboard()
+    camera_positions = [t.ravel()]  # List to store trajectory points
 
     # Process subsequent frames
     for i in range(4, 598):  # Adjust the range to your dataset
@@ -292,6 +305,12 @@ if __name__ == "__main__":
 
         frame2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
         state = vo_continuous(frame2_folder, K, state, min_landmarks=50, min_baseline_angle=1.0)
+        # Update trajectory and landmark count
+        camera_positions.append(state['t'].ravel())
+        landmark_counts.append(len(state['X']))
+
+        # Call the dashboard plot
+        update_dashboard(fig, axes, state, camera_positions, frame2_folder)
 
     plt.show()  # Show all plots at once
 
