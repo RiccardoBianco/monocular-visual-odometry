@@ -4,6 +4,8 @@ import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+plot_bootstrap = True
+
 def vo_bootstrap(frame1_path, frame2_path, K):
     # Load frames
     frame1_color = cv2.imread(frame1_path, cv2.IMREAD_COLOR)
@@ -26,10 +28,10 @@ def vo_bootstrap(frame1_path, frame2_path, K):
         c, d = old.ravel()
         frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1)
         frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (255, 0, 0), 2)
-
-    plt.figure()
-    plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
-    plt.title('Tracked Points')
+    if plot_bootstrap == True:
+        plt.figure()
+        plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
+        plt.title('Tracked Points')
 
     valid_corners = np.float32(valid_corners)
     valid_tracked_corners = np.float32(valid_tracked_corners)
@@ -42,23 +44,32 @@ def vo_bootstrap(frame1_path, frame2_path, K):
     print("Rotation matrix: \n", R)
     print("Translation vector: \n", t)
 
+    # Combine masks to determine final inliers and outliers
+    final_mask = (mask.ravel() == 1) & (mask_pose.ravel() == 255)
+
+    # Filter inliers and outliers
+    inlier_corners = valid_corners[final_mask]
+    inlier_tracked_corners = valid_tracked_corners[final_mask]
+
+    outlier_corners = valid_corners[~final_mask]
+    outlier_tracked_corners = valid_tracked_corners[~final_mask]
+
     # Visualize inliers and outliers
-    for i, (new, old) in enumerate(zip(valid_tracked_corners, valid_corners)):
+    for (new, old) in zip(inlier_tracked_corners, inlier_corners):
         a, b = new.ravel()
         c, d = old.ravel()
-        if mask_pose[i]:
-            frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1)
-            frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
-        else:
-            frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 0, 255), -1)
-            frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
+        frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
+        frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
 
-    inlier_corners = valid_corners[mask_pose.ravel() == 255]
-    inlier_tracked_corners = valid_tracked_corners[mask_pose.ravel() == 255]
+    for (new, old) in zip(outlier_tracked_corners, outlier_corners):
+        a, b = new.ravel()
+        c, d = old.ravel()
+        frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
+        frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
 
     plt.figure()
     plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
-    plt.title('Inliers and Outliers')
+    plt.title('Inliers (Green) and Outliers (Red)')
 
     # Triangulate 3D points
     P1 = np.dot(K, np.hstack((np.eye(3), np.zeros((3, 1)))))  # First frame pose: Identity
@@ -68,20 +79,21 @@ def vo_bootstrap(frame1_path, frame2_path, K):
     pts3D = pts4D[:3] / pts4D[3]  # shape (3, N)
 
     # Plot 3D landmarks
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(pts3D[0], pts3D[1], pts3D[2], c='r', marker='o', label='3D Points')
+    if plot_bootstrap == True:
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(pts3D[0], pts3D[1], pts3D[2], c='r', marker='o', label='3D Points')
 
-    camera_center1 = np.array([0, 0, 0])
-    ax.scatter(*camera_center1, c='blue', marker='^', s=100, label='Camera 1')
+        camera_center1 = np.array([0, 0, 0])
+        ax.scatter(*camera_center1, c='blue', marker='^', s=100, label='Camera 1')
 
-    camera_center2 = camera_center1 + t.ravel()
-    ax.scatter(*camera_center2, c='green', marker='^', s=100, label='Camera 2')
+        camera_center2 = camera_center1 + t.ravel()
+        ax.scatter(*camera_center2, c='green', marker='^', s=100, label='Camera 2')
 
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.legend()
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.legend()
 
     # Return the second frame and the tracked keypoints as initialization
     return frame2, inlier_tracked_corners.reshape(-1,1,2), pts3D, R, t
@@ -367,6 +379,7 @@ def update_dashboard(
     img_rgb = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2RGB)
     ax_img.imshow(img_rgb)
     ax_img.set_title("Current image")
+    ax_img.set_aspect('equal', adjustable='box')
 
     # 2) # tracked landmarks over last partial_window frames
     ax_landmark_count.clear()
@@ -376,6 +389,7 @@ def update_dashboard(
         marker='o'
     )
     ax_landmark_count.set_title(f"# tracked landmarks (last {partial_window} frames)")
+    ax_landmark_count.set_aspect('equal', adjustable='box')
 
     # 3) Trajectory of last partial_window frames (2D top-down view)
     ax_trajectory_partial.clear()
@@ -387,6 +401,7 @@ def update_dashboard(
         ax_trajectory_partial.scatter(xs, ys, c='k', s=20)
         ax_trajectory_partial.set_title(f"Trajectory of last {partial_window} frames")
     ax_trajectory_partial.set_aspect('equal', 'box')
+    ax_trajectory_partial.set_aspect('equal', adjustable='box')
 
     # 4) Full trajectory
     ax_trajectory_full.clear()
@@ -395,9 +410,14 @@ def update_dashboard(
         ys_full = [p[1] for p in full_trajectory]
         ax_trajectory_full.plot(xs_full, ys_full, 'b-')
         ax_trajectory_full.set_title("Full trajectory")
-    ax_trajectory_full.set_aspect('equal', 'box')
+    ax_trajectory_full.set_aspect('equal', adjustable='box')
 
-    plt.tight_layout()
+    ax_img.set_box_aspect(1)  # Keeps the box square
+    ax_traj_partial.set_box_aspect(1)
+    ax_landmark_count.set_box_aspect(1)
+    ax_traj_full.set_box_aspect(1)
+
+    #plt.tight_layout()
     plt.draw()
     plt.pause(0.01)  # short pause to allow the figure to update
 
