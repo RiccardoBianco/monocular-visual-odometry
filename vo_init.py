@@ -35,8 +35,9 @@ def vo_bootstrap(frame1_path, frame2_path, K):
     valid_tracked_corners = np.float32(valid_tracked_corners)
 
     # Compute essential matrix and pose
-    E, mask = cv2.findEssentialMat(valid_corners, valid_tracked_corners, K, method=cv2.RANSAC, prob=0.999, threshold=1)
+    E, mask = cv2.findEssentialMat(valid_corners, valid_tracked_corners, K, method=cv2.RANSAC, prob=0.99, threshold=1)
     _, R, t, mask_pose = cv2.recoverPose(E, valid_corners, valid_tracked_corners, K)
+    t = -t
 
     print("Rotation matrix: \n", R)
     print("Translation vector: \n", t)
@@ -74,7 +75,7 @@ def vo_bootstrap(frame1_path, frame2_path, K):
     camera_center1 = np.array([0, 0, 0])
     ax.scatter(*camera_center1, c='blue', marker='^', s=100, label='Camera 1')
 
-    camera_center2 = camera_center1 - t.ravel()
+    camera_center2 = camera_center1 + t.ravel()
     ax.scatter(*camera_center2, c='green', marker='^', s=100, label='Camera 2')
 
     ax.set_xlabel('X')
@@ -86,7 +87,7 @@ def vo_bootstrap(frame1_path, frame2_path, K):
     return frame2, inlier_tracked_corners.reshape(-1,1,2), pts3D, R, t
 
 
-def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle=1.0):
+def vo_continuous(new_frame_path, K, state, min_landmarks=150, min_baseline_angle=1.0):
     """
     Process a new frame for continuous visual odometry using a stateful approach.
     
@@ -96,8 +97,8 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
     - state: dictionary containing
         {
           'db_image': previous grayscale frame,
-          'P': array of shape (N,1,2) known landmark keypoints
-          'X': array of shape (N,3) landmarks
+          'P': array of shape (N,1,2) known landmark keypoints (2D)
+          'X': array of shape (N,3) landmarks (3D)
           'R', 't': previous camera pose
           'C': candidate keypoints (M,1,2)
           'F': first observation of candidate keypoints (M,1,2)
@@ -149,14 +150,14 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
 
     # 3. Pose estimation with PnP
     R_new, t_new = R_prev, t_prev
-    if X.shape[0] >= 6:
+    if X.shape[0] >= 20:
         objectPoints = X.reshape(-1,3)
         imagePoints = P.reshape(-1,2)
         distCoeffs = np.zeros((4,1))
         success, rvec, tvec, inliers = cv2.solvePnPRansac(
             objectPoints, imagePoints, K, distCoeffs,
-            reprojectionError=3.0,
-            flags=cv2.SOLVEPNP_ITERATIVE
+            reprojectionError=8.0
+            # flags=cv2.SOLVEPNP_ITERATIVE
         )
         if success and inliers is not None and len(inliers) > 0:
             inlier_mask = np.zeros(len(objectPoints), dtype=bool)
@@ -231,6 +232,7 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
                 P_current = K @ np.hstack((R_new, t_new))
                 pts4D = cv2.triangulatePoints(P_first, P_current, c_first.T, c_current.T)
                 X_new = (pts4D[:3] / pts4D[3]).T
+
                 # Update database
                 P = np.vstack((P, c_current.reshape(1,1,2)))
                 X = np.vstack((X, X_new))
@@ -242,6 +244,79 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
             C = C[mask_keep]
             F_first = F_first[mask_keep]
             T_first = [T_first[j] for j in range(len(T_first)) if mask_keep[j]]
+
+    # # 5. Triangulate candidates *individually* if baseline is sufficient
+    # # -------------------------------------------------------------------
+    # # (Professor's instruction: "only if baseline > 10% of avg scene distance,
+    # #  triangulate from that first pose and current pose.")
+    # if C.shape[0] > 0:
+    #     # Compute average distance to the scene using current inlier X
+    #     # Transform them into the current camera frame => (R_new*X_i^T + t_new)
+    #     # Then average their z-values (or Euclidean norms, depending on your definition).
+    #     if X.shape[0] > 0:
+    #         X_in_current = (R_new @ X.T + t_new).T  # shape: (N,3)
+    #         # Filter out negative depths, if any
+    #         positive_depths = X_in_current[:,2][X_in_current[:,2] > 0]
+    #         if len(positive_depths) > 0:
+    #             average_distance = np.mean(positive_depths)
+    #         else:
+    #             average_distance = 1.0  # fallback
+    #     else:
+    #         average_distance = 1.0  # fallback if no inliers yet
+
+    #     # We'll collect indices of candidates that we manage to triangulate
+    #     good_for_triangulation = []
+    #     for i in range(C.shape[0]):
+    #         # Pose where candidate i was first seen
+    #         R_f, t_f = T_first[i]
+
+    #         # Baseline between the two poses
+    #         baseline_dist = np.linalg.norm(t_new - t_f)
+    #         # Compare with the 10% threshold
+    #         if baseline_dist > 0.1 * average_distance:
+    #             # OK, let's triangulate it
+    #             c_current = C[i].reshape(1, 2).T  # shape (2,1)
+    #             c_first   = F_first[i].reshape(1, 2).T
+
+    #             # Camera matrices
+    #             P_first   = K @ np.hstack((R_f, t_f))     # shape (3,4)
+    #             P_current = K @ np.hstack((R_new, t_new)) # shape (3,4)
+
+    #             pts4D = cv2.triangulatePoints(P_first, P_current, c_first, c_current)
+    #             X_new = pts4D[:3] / pts4D[3]  # shape (3,)
+
+    #             # If we want the 3D point in the "bootstrap/world" frame:
+    #             # By default, triangulatePoints gives coords in that first camera's
+    #             # reference if you used [I|0], [R|t]. But here you're using "R_f, t_f".
+    #             # So X_new is in the coordinate system of the *first camera that saw it*.
+    #             # If your "bootstrap" camera is the global reference, then R_f,t_f is
+    #             # from world->camera, so to get world coords you do inverse transform:
+    #             X_world = R_f.T @ (X_new - t_f)
+    #             # But: *exact transformation depends on your chosen reference frames*.
+    #             #
+    #             # For simplicity, let’s store X_new in that first camera's reference
+    #             # or transform to "current frame." That depends on your pipeline.
+    #             # Example: let's transform it to "world" if your first camera is identity:
+    #             # X_world = R_f.T.dot(X_new) - R_f.T.dot(t_f)
+
+    #             # Add to P, X
+    #             # We'll store the "current" 2D observation in P, so that the solver
+    #             # can incorporate it next iteration
+    #             new_pt = C[i].reshape(1,1,2)
+    #             P = np.vstack((P, new_pt))
+    #             # And store the 3D coordinate in X
+    #             X = np.vstack((X, X_world.reshape(1,3)))
+
+    #             # Mark this candidate as triangulated
+    #             good_for_triangulation.append(i)
+
+    #     # Remove triangulated candidates from C, F_first, T_first
+    #     if len(good_for_triangulation) > 0:
+    #         mask_keep = np.ones(C.shape[0], dtype=bool)
+    #         mask_keep[good_for_triangulation] = False
+    #         C = C[mask_keep]
+    #         F_first = F_first[mask_keep]
+    #         T_first = [T_first[j] for j in range(len(T_first)) if mask_keep[j]]
 
     # Update the state
     state['db_image'] = current_frame
@@ -255,6 +330,76 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=50, min_baseline_angle
 
     return state
 
+def update_dashboard(
+    ax_img, ax_landmark_count, ax_trajectory_partial, ax_trajectory_full,
+    current_frame_color, db_keypoints, full_trajectory, 
+    landmark_counts, 
+    partial_window=20
+):
+    """
+    Updates the four subplots in your dashboard.
+
+    Parameters:
+    -----------
+    ax_img : matplotlib Axes
+        Axes object for the current image with keypoints.
+    ax_landmark_count : matplotlib Axes
+        Axes object for the # tracked landmarks over recent frames.
+    ax_trajectory_partial : matplotlib Axes
+        Axes object for the last 'partial_window' frames’ trajectory.
+    ax_trajectory_full : matplotlib Axes
+        Axes object for the full trajectory from the beginning.
+    current_frame_color : np.ndarray (H,W,3)
+        The current color (BGR) image with drawn keypoints.
+    db_keypoints : np.ndarray (N,1,2)
+        The tracked keypoints for the current frame.
+    full_trajectory : list of (x, y)
+        A list containing the global 2D positions (or 3D if you prefer top-down) 
+        of the camera from the start to current frame.
+    landmark_counts : list of int
+        A list containing the number of tracked landmarks in each frame.
+    partial_window : int
+        Number of recent frames to display in the partial trajectory.
+    """
+    # 1) Current image with keypoints
+    ax_img.clear()
+    # Convert BGR to RGB for matplotlib
+    img_rgb = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2RGB)
+    ax_img.imshow(img_rgb)
+    ax_img.set_title("Current image")
+
+    # 2) # tracked landmarks over last partial_window frames
+    ax_landmark_count.clear()
+    ax_landmark_count.plot(
+        range(max(0, len(landmark_counts) - partial_window), len(landmark_counts)),
+        landmark_counts[-partial_window:] if len(landmark_counts) > partial_window else landmark_counts,
+        marker='o'
+    )
+    ax_landmark_count.set_title(f"# tracked landmarks (last {partial_window} frames)")
+
+    # 3) Trajectory of last partial_window frames (2D top-down view)
+    ax_trajectory_partial.clear()
+    if len(full_trajectory) > 0:
+        # Show only last partial_window positions
+        recent_trajectory = full_trajectory[-partial_window:]
+        xs = [p[0] for p in recent_trajectory]
+        ys = [p[1] for p in recent_trajectory]
+        ax_trajectory_partial.scatter(xs, ys, c='k', s=20)
+        ax_trajectory_partial.set_title(f"Trajectory of last {partial_window} frames")
+    ax_trajectory_partial.set_aspect('equal', 'box')
+
+    # 4) Full trajectory
+    ax_trajectory_full.clear()
+    if len(full_trajectory) > 0:
+        xs_full = [p[0] for p in full_trajectory]
+        ys_full = [p[1] for p in full_trajectory]
+        ax_trajectory_full.plot(xs_full, ys_full, 'b-')
+        ax_trajectory_full.set_title("Full trajectory")
+    ax_trajectory_full.set_aspect('equal', 'box')
+
+    plt.tight_layout()
+    plt.draw()
+    plt.pause(0.01)  # short pause to allow the figure to update
 
 if __name__ == "__main__":
     frame_1_relative_folder = "/datasets/parking/images/img_00000.png"
@@ -284,8 +429,18 @@ if __name__ == "__main__":
         'T': [] # No poses for candidates yet
     }
 
-    # Process subsequent frames
-    for i in range(4, 598):  # Adjust the range to your dataset
+    # We'll keep track of the camera's *global* 2D positions (X, Z) or (X, Y) over time.
+    # For simplicity, assume each new R,t is relative to the initial frame = Identity.
+    # We'll accumulate poses and the number of inliers/landmarks
+    full_trajectory = []
+    landmark_counts = []
+
+    # For the live "dashboard", create one figure with 4 subplots
+    fig, ((ax_img, ax_traj_partial), (ax_landmark_count, ax_traj_full)) = plt.subplots(2,2, figsize=(10,8))
+    plt.subplots_adjust(hspace=0.3, wspace=0.3)
+
+    # Main loop
+    for i in range(4, 598):  # short range for demonstration
         if i < 10:
             frame_2_relative_folder = f"/datasets/parking/images/img_0000{i}.png"
         elif i < 100:
@@ -293,261 +448,38 @@ if __name__ == "__main__":
         else:
             frame_2_relative_folder = f"/datasets/parking/images/img_00{i}.png"
 
-        frame2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
-        state = vo_continuous(frame2_folder, K, state, min_landmarks=50, min_baseline_angle=10.0)
+        new_frame_path = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
 
-    plt.show()  # Show all plots at once
+        # Perform continuous VO step
+        state = vo_continuous(new_frame_path, K, state, min_landmarks=150, min_baseline_angle=10.0)
 
+        # state['R'], state['t'] is the pose from the previous frame’s coordinate system
+        R_new = state['R']
+        t_new = state['t']
 
+        full_trajectory.append((-t_new[0], -t_new[2]))  ### HERE is with the -!!!
 
+        current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
+        # Draw keypoints from state['P']
+        if state['P'] is not None:
+            for pt in state['P']:
+                x, y = pt.ravel()
+                cv2.circle(current_frame_color, (int(x), int(y)), 3, (0, 255, 0), -1)
 
-# OLD VERSION: was working up until re-triangulation of new landmarks
-#              it was also missing the candidate parts
+        # Count how many are in P (tracked db keypoints)
+        tracked_landmarks_count = state['P'].shape[0] if state['P'] is not None else 0
+        landmark_counts.append(tracked_landmarks_count)
 
-# import numpy as np
-# import cv2
-# import os
-# import matplotlib.pyplot as plt
-# from mpl_toolkits.mplot3d import Axes3D
+        # Update the dashboard
+        update_dashboard(
+            ax_img, ax_landmark_count, ax_traj_partial, ax_traj_full,
+            current_frame_color,
+            db_keypoints=state['P'],
+            full_trajectory=full_trajectory,
+            landmark_counts=landmark_counts,
+            partial_window=20
+        )
 
-# def vo_bootstrap(frame1_path, frame2_path, K):
-#     # Load frames
-#     frame1_color = cv2.imread(frame1_path, cv2.IMREAD_COLOR)
-#     frame2_color = cv2.imread(frame2_path, cv2.IMREAD_COLOR)
-#     frame1 = cv2.imread(frame1_path, cv2.IMREAD_GRAYSCALE)
-#     frame2 = cv2.imread(frame2_path, cv2.IMREAD_GRAYSCALE)
-
-#     # Detect keypoints
-#     corners = cv2.goodFeaturesToTrack(frame1, maxCorners=1000, qualityLevel=0.01, minDistance=7)
-
-#     # Track keypoints
-#     tracked_points, status, error = cv2.calcOpticalFlowPyrLK(frame1, frame2, corners, None)
-
-#     # Draw tracked points
-#     valid_corners = corners[status == 1]
-#     valid_tracked_corners = tracked_points[status == 1]
-
-#     for (new, old) in zip(valid_tracked_corners, valid_corners):
-#         a, b = new.ravel()
-#         c, d = old.ravel()
-#         frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1) # BGR
-#         frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (255, 0, 0), 2) # BGR
-
-#     plt.figure()
-#     plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
-#     plt.title('Tracked Points')
-
-#     # Compute pose
-#     valid_corners = np.float32(valid_corners)
-#     valid_tracked_corners = np.float32(valid_tracked_corners)
-
-#     E, mask = cv2.findEssentialMat(valid_corners, valid_tracked_corners, K, method=cv2.RANSAC, prob=0.999, threshold=1)
-#     _, R, t, mask_pose = cv2.recoverPose(E, valid_corners, valid_tracked_corners, K)
-
-#     print("Rotation matrix: \n", R)
-#     print("Translation vector: \n", t)
-
-#     # Draw inliers and outliers
-#     for i, (new, old) in enumerate(zip(valid_tracked_corners, valid_corners)):
-#         a, b = new.ravel()
-#         c, d = old.ravel()
-#         if mask_pose[i]:
-#             frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1)
-#             frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
-#         else:
-#             frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 0, 255), -1)
-#             frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
-
-#     inlier_corners = valid_corners[mask_pose.ravel() == 255]
-#     inlier_tracked_corners = valid_tracked_corners[mask_pose.ravel() == 255]
-
-#     plt.figure()
-#     plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
-#     plt.title('Inliers and Outliers')
-
-#     # Triangulate 3D points
-#     P1 = np.dot(K, np.hstack((np.eye(3), np.zeros((3, 1)))))  # First frame (identity pose)
-#     P2 = np.dot(K, np.hstack((R, t)))  # Second frame (relative pose)
-
-#     pts4D = cv2.triangulatePoints(P1, P2, inlier_corners.T, inlier_tracked_corners.T)
-#     pts3D = pts4D[:3] / pts4D[3]
-
-
-#     # Plot 3D landmarks
-#     fig = plt.figure()
-#     ax = fig.add_subplot(111, projection='3d')
-#     ax.scatter(pts3D[0], pts3D[1], pts3D[2], c='r', marker='o', label='3D Points')
-
-#     camera_center1 = np.array([0, 0, 0])
-#     ax.scatter(*camera_center1, c='blue', marker='^', s=100, label='Camera 1')
-
-#     camera_center2 = camera_center1 + t
-#     ax.scatter(*camera_center2, c='green', marker='^', s=100, label='Camera 2')
-
-#     ax.set_xlabel('X')
-#     ax.set_ylabel('Y')
-#     ax.set_zlabel('Z')
-#     ax.legend()
-
-#     return frame2, inlier_tracked_corners, pts3D, R, t
-
-
-# def vo_continuous(frame2_path, K, db_image, db_keypoints, db_landmarks, R, t, min_landmarks=10):
-#     """
-#     Process the new frame for continuous visual odometry.
-
-#     Inputs:
-#     - frame1_path, frame2_path: paths to consecutive frames
-#     - K: camera intrinsics
-#     - db_image: previous frame (grayscale)
-#     - db_keypoints: np.array of shape (N,1,2) representing the 2D keypoints in the db_image
-#     - db_landmarks: np.array of shape (N,3), 3D points corresponding to db_keypoints
-#     - R, t: previous pose of the camera
-#     - min_landmarks: threshold for minimum number of landmarks required
-
-#     Output:
-#     - updated_frame: current frame (grayscale)
-#     - updated_keypoints: 2D keypoints tracked in the current frame
-#     - updated_landmarks: corresponding 3D landmarks of the tracked keypoints
-#     - R_new, t_new: new camera pose
-#     """
-
-#     # Load frames
-#     frame2 = cv2.imread(frame2_path, cv2.IMREAD_GRAYSCALE)
-
-#     # Track keypoints from db_image to current frame2
-#     # Note: db_keypointnumbers should be in shape (N,1,2) for calcOpticalFlowPyrLK
-#     tracked_points, status, error = cv2.calcOpticalFlowPyrLK(db_image, frame2, db_keypoints, None)
-
-    
-#     # Filter for valid tracks
-#     valid_idx = (status == 1).ravel()
-#     valid_db_keypoints = db_keypoints[valid_idx]
-#     valid_tracked_points = tracked_points[valid_idx]
-#     valid_landmarks = db_landmarks[valid_idx]
-
-#     # If we have at least 6 points (PnP requires at least some correspondences), run PnP
-#     if len(valid_landmarks) > 6:
-#         # Solve PnP
-#         # We need objectPoints: Nx3, imagePoints: Nx2
-#         objectPoints = valid_landmarks.reshape(-1,3)
-#         imagePoints = valid_tracked_points.reshape(-1,2)
-
-#         # Distortion assumed zero for simplicity; adjust if needed
-#         distCoeffs = np.zeros((4,1))
-
-#         # run solvePnPRansac
-#         # Flags could be: cv2.SOLVEPNP_ITERATIVE or cv2.SOLVEPNP_AP3P, etc.
-#         # R and t were previously from bootstrap: we can use them as initial guess if needed
-#         success, rvec, tvec, inliers = cv2.solvePnPRansac(
-#             objectPoints, imagePoints, K, distCoeffs,
-#             reprojectionError=3.0, # Adjust threshold as needed
-#             flags=cv2.SOLVEPNP_ITERATIVE
-#         )
-
-#         if success and len(inliers) > 0:
-#             # Filter by inliers
-#             inlier_mask = np.zeros(len(objectPoints), dtype=bool)
-#             inlier_mask[inliers.flatten()] = True
-
-#             # Keep only inliers
-#             valid_landmarks = valid_landmarks[inlier_mask]
-#             valid_tracked_points = valid_tracked_points[inlier_mask]
-
-#             # Convert rvec, tvec to R, t
-#             R_new, _ = cv2.Rodrigues(rvec)
-#             t_new = tvec
-
-#             print("Rotation matrix: \n", R_new)
-#             print("Translation vector: \n", t_new)
-#         else:
-#             # If PnP fails, fallback to previous pose or handle error
-#             R_new, t_new = R, t
-#     else:
-#         # Not enough points to run PnP.
-#         # Could handle by just keeping previous pose, or try another method:
-#         R_new, t_new = R, t
-
-#     # Now we have updated R_new, t_new. We must update the db_image and db_keypoints, db_landmarks
-#     updated_frame = frame2
-#     updated_keypoints = valid_tracked_points.reshape(-1,1,2)
-#     updated_landmarks = valid_landmarks
-
-#     # Remove landmarks that were lost (we already did by filtering valid_idx)
-#     # If the number of landmarks is too low, re-triangulate new landmarks
-#     if updated_landmarks.shape[0] < min_landmarks:
-#         print("Re-triangulating new landmarks...")
-#         # Re-triangulate new landmarks:
-#         # 1. Detect new features in current frame that are not in updated_keypoints
-#         # 2. Match or track these new features back to previous frame or another keyframe
-#         #    so that we can triangulate
-#         #
-#         # As a simple example, let's just detect new corners in the current frame:
-#         new_corners = cv2.goodFeaturesToTrack(updated_frame, maxCorners=500, qualityLevel=0.01, minDistance=7)
-
-#         # Filter out corners that are too close to existing updated_keypoints
-#         # A simple heuristic: Remove any corner that is within some pixel distance of an existing keypoint
-#         if new_corners is not None:
-#             existing_points = updated_keypoints.reshape(-1, 2)
-#             dist_threshold = 5
-#             keep_idx = []
-#             for i, c in enumerate(new_corners):
-#                 c_pt = c.ravel()
-#                 # Check distance to existing points
-#                 dists = np.sqrt(np.sum((existing_points - c_pt)**2, axis=1))
-#                 if np.all(dists > dist_threshold):
-#                     keep_idx.append(i)
-#             new_corners = new_corners[keep_idx]
-
-#             # Now we have some new corners.
-#             # We need a second view (the previous frame and its pose) to triangulate them.
-#             # Let's try tracking them back to the previous db_image:
-#             # NOTE: This is simplistic. In reality, you'd want a keyframe or a frame that differs.
-#             # Here we just assume we can track them back to the previous frame for demonstration.
-#             back_tracked_points, st, err = cv2.calcOpticalFlowPyrLK(updated_frame, db_image, new_corners, None)
-
-#             # Filter valid back tracks
-#             valid_back = (st == 1).ravel()
-#             re_tri_corners = new_corners[valid_back]
-#             re_tri_back = back_tracked_points[valid_back]
-
-#             # Triangulate using previous pose (R, t) and current pose (R_new, t_new)
-#             P1 = K @ np.hstack((R, t))
-#             P2 = K @ np.hstack((R_new, t_new))
-#             pts4D = cv2.triangulatePoints(P1, P2, re_tri_back.T, re_tri_corners.T)
-#             pts3D_new = (pts4D[:3] / pts4D[3]).T
-#             pts3D_new = pts3D_new.reshape(-1,3)
-
-#             # Add these new landmarks to our updated sets
-#             updated_keypoints = np.vstack((updated_keypoints, re_tri_corners))
-#             updated_landmarks = np.vstack((updated_landmarks, pts3D_new))
-
-#     return updated_frame, updated_keypoints, updated_landmarks, R_new, t_new
-
-# if __name__ == "__main__":
-#     frame_1_relative_folder = "/datasets/parking/images/img_00000.png"
-#     frame_2_relative_folder = "/datasets/parking/images/img_00003.png"
-
-#     frame1_folder = os.path.join(os.path.dirname(__file__) + frame_1_relative_folder)
-#     frame2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
-
-#     K = np.array([[331.37, 0, 320],
-#                   [0, 369.568, 240],
-#                   [0, 0, 1]])
-
-#     db_image, db_keypoints, db_landmarks, R, t, = vo_bootstrap(frame1_folder, frame2_folder, K)
-    
-#     db_landmarks = db_landmarks.T ## needed for vo_continuos
-    
-#     for i in range(4, 598):  # Assuming you want to process frames from img_00004.png to img_00597.png
-#         if i < 10:
-#             frame_2_relative_folder = f"/datasets/parking/images/img_0000{i}.png"
-#         elif i < 100:
-#             frame_2_relative_folder = f"/datasets/parking/images/img_000{i}.png"
-#         else:
-#             frame_2_relative_folder = f"/datasets/parking/images/img_00{i}.png"
-
-#         frame2_folder = os.path.join(os.path.dirname(__file__) + frame_2_relative_folder)
-#         db_image, db_keypoints, db_landmarks, R, t = vo_continuous(frame2_folder, K, db_image, db_keypoints, db_landmarks, R, t, min_landmarks=10)
-
-#     plt.show()  # Show all plots at once
+    # Finally, show everything at the end (block=True to keep the plots open)
+    plt.ioff()
+    plt.show()
