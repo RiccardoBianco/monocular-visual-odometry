@@ -4,9 +4,10 @@ import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+
+################  DASHBOARD UTILITY  ############################
 # Define a global flag
 stop_pipeline = False
-
 
 ifset = set()
 previous_ifset = set()
@@ -19,14 +20,23 @@ def on_key_press(event):
 
 def start_key_listener(fig):
     fig.canvas.mpl_connect('key_press_event', on_key_press)
-
+################################################################
 
 plot_bootstrap = False
 plot_dashboard = True
 plot_vo_continuos_inliers_outliers = False
-bootstrap_detector = 'harris'  # 'shi-tomasi' or 'harris'
+bootstrap_detector = 'shi-tomasi'  # 'shi-tomasi' or 'harris'
 vo_continuous_detector = 'harris'  # 'shi-tomasi' or 'harris'
 dataset = 'parking'  # 'parking' or 'malaga' or 'kitti'
+
+### KLT params
+KLT_threshold = 20
+winSize=(30,30)
+max_level=3
+criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.001)
+lk_params = dict(winSize=winSize,
+    maxLevel=max_level,
+    criteria=criteria)
 
 def vo_bootstrap(frame1_path, frame2_path, K):
     # Load frames
@@ -38,20 +48,25 @@ def vo_bootstrap(frame1_path, frame2_path, K):
     # Detect keypoints in the first frame
     # Harris returns the right transformation [1,0,0], Shi returns [-1,0,0], probably bcs from cam2 frame (?) although it should be the opposite
     # quality-level: higher is stricter (discard all the ones with quality < x * max_quality)
-    if bootstrap_detector == 'shi-thomasi':
-        corners = cv2.goodFeaturesToTrack(frame1, maxCorners=1000, qualityLevel=0.01, minDistance=5) # [-0.99,0.0,-0.04]
-        # corners = cv2.goodFeaturesToTrack(frame1, maxCorners=150, qualityLevel=0.01, minDistance=5) # [0.93,-0.04,0.35]
+    if bootstrap_detector == 'shi-tomasi':
+        corners = cv2.goodFeaturesToTrack(frame1, maxCorners=1000, qualityLevel=0.00001, minDistance=5) # [-0.99,0.0,-0.04]
+        # corners = cv2.goodFeaturesToTrack(frame1, maxCorners=150, qualityLevel=0.000011, minDistance=5) # [0.93,-0.04,0.35]
     elif bootstrap_detector == 'harris':
-        corners = cv2.goodFeaturesToTrack(frame1, maxCorners=1000, qualityLevel=0.01, minDistance=5, useHarrisDetector=True, k=0.03) # [0.99,0.0,-0.12]
+        corners = cv2.goodFeaturesToTrack(frame1, maxCorners=1000, qualityLevel=0.000010, minDistance=5, useHarrisDetector=True, k=0.03) # [0.99,0.0,-0.12]
         # Interesting fact to prove how sensitive these params are... 
         # with minDistance=5 and k=0.03, it returns [ 0.99,0.0,-0.1]
         # with minDistance=7 and k=0.03, it returns [-0.92,0.0, 0.3]...
 
     # Track keypoints to the second frame
-    tracked_points, status, error = cv2.calcOpticalFlowPyrLK(frame1, frame2, corners, nextPts=None)
+    tracked_points, status, error = cv2.calcOpticalFlowPyrLK(frame1, frame2, corners, nextPts=None, **lk_params)
+    if error is not None:
+        valid_keypoints_mask = error < KLT_threshold
+        mask_KLT = np.logical_and(valid_keypoints_mask, status)
+    else:
+        mask_KLT = status
 
-    valid_corners = corners[status == 1]
-    valid_tracked_corners = tracked_points[status == 1]
+    valid_corners = corners[mask_KLT == 1]
+    valid_tracked_corners = tracked_points[mask_KLT == 1]
 
     # Visualize tracked points
     for (new, old) in zip(valid_tracked_corners, valid_corners):
@@ -171,8 +186,16 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=150, min_baseline_angl
     # 1. Track db_keypoints
     if P is not None and P.shape[0] > 0:
         ifset.add(1)
-        tracked_points, status, _ = cv2.calcOpticalFlowPyrLK(prev_frame, current_frame, P, nextPts=None)
-        valid_idx = status.flatten() == 1
+        tracked_points, status, error = cv2.calcOpticalFlowPyrLK(prev_frame, current_frame, P, nextPts=None, **lk_params)
+        if error is not None:
+            valid_keypoints_mask = error < KLT_threshold
+            final_mask_db = np.logical_and(valid_keypoints_mask, status)
+        else:
+            final_mask_db = status
+        # num_errors_over_30 = np.sum(error > 30)
+        # print(f"Number of errors > 30: {num_errors_over_30}")
+        
+        valid_idx = final_mask_db.flatten() == 1
         
         valid_corners = P[valid_idx]
         P_tracked = tracked_points[valid_idx]
@@ -187,10 +210,16 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=150, min_baseline_angl
     # 2. Track candidate keypoints
     if C is not None and C.shape[0] > 0:
         ifset.add(3)
-        C_tracked, status_c, _ = cv2.calcOpticalFlowPyrLK(prev_frame, current_frame, C, nextPts=None)
-        # valid_candidate_corners = C[status_c == 1]
+        C_tracked, status_c, error = cv2.calcOpticalFlowPyrLK(prev_frame, current_frame, C, nextPts=None, **lk_params)
+        if error is not None:
+            valid_keypoints_mask = error < KLT_threshold
+            final_mask_c = np.logical_and(valid_keypoints_mask, status_c)
+        else:
+            final_mask_c = status_c
+        
+        # valid_candidate_corners = C[final_mask_c == 1]
 
-        valid_c_idx = status_c.flatten() == 1
+        valid_c_idx = final_mask_c.flatten() == 1
         C_tracked = C_tracked[valid_c_idx]
         F_first = F_first[valid_c_idx]
         T_first = [T_first[i] for i in range(len(T_first)) if valid_c_idx[i]]
@@ -258,29 +287,29 @@ def vo_continuous(new_frame_path, K, state, min_landmarks=150, min_baseline_angl
         print("Not enough landmarks for PnP...keeping previous pose.")
 
     # Visualize db_keypoints inliers and outliers
-    if inlier_tracked_points is not None and inlier_tracked_points.shape[0] > 0:
-        ifset.add(9)
-        for (new, old) in zip(inlier_tracked_points, inlier_points):
-            a, b = new.ravel()
-            c, d = old.ravel()
-            # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
-            current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
+    # if inlier_tracked_points is not None and inlier_tracked_points.shape[0] > 0:
+    #     ifset.add(9)
+    for (new, old) in zip(inlier_tracked_points, inlier_points):
+        a, b = new.ravel()
+        c, d = old.ravel()
+        # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
+        current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
 
-    if outlier_tracked_points is not None and outlier_tracked_points.shape[0] > 0:
-        ifset.add(10)
-        for (new, old) in zip(outlier_tracked_points, outlier_points):
-            a, b = new.ravel()
-            c, d = old.ravel()
-            # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
-            current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
+    # if outlier_tracked_points is not None and outlier_tracked_points.shape[0] > 0:
+    #     ifset.add(10)
+    for (new, old) in zip(outlier_tracked_points, outlier_points):
+        a, b = new.ravel()
+        c, d = old.ravel()
+        # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
+        current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
 
     # 4. Add new candidate keypoints
     if vo_continuous_detector == 'shi-tomasi':
         ifset.add(11)
-        new_corners = cv2.goodFeaturesToTrack(current_frame, maxCorners=1000, qualityLevel=0.1, minDistance=5)
+        new_corners = cv2.goodFeaturesToTrack(current_frame, maxCorners=1000, qualityLevel=0.000010, minDistance=5)
     elif vo_continuous_detector == 'harris':
         ifset.add(12)
-        new_corners = cv2.goodFeaturesToTrack(current_frame, maxCorners=1000, qualityLevel=0.01, minDistance=7, useHarrisDetector=True, k=0.05)
+        new_corners = cv2.goodFeaturesToTrack(current_frame, maxCorners=1000, qualityLevel=0.000010, minDistance=7, useHarrisDetector=True, k=0.05)
     
     if new_corners is not None:
         ifset.add(13)
@@ -625,7 +654,8 @@ if __name__ == "__main__":
             R_new = state['R']
             t_new = state['t']
 
-            full_trajectory.append((t_new[0], t_new[2]))
+            t_dashboard = -np.matmul(R_new.T, t_new)
+            full_trajectory.append((t_dashboard[0], t_dashboard[2]))
 
             current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
             
