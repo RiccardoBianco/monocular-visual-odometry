@@ -5,6 +5,7 @@ import cv2
 # Up to us to check which one is better (memory vs computational efficiency)
 parking_params_map = {
     "relative_folder": "/datasets/parking/images/",
+    "ground_truth_path": "/datasets/parking/poses.txt",
     "bootstrap_frames": [0, 3], # seems optimal
     "bootstrap_detector": "Shi-Tomasi", # or "Shi-Tomasi"
 

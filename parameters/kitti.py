@@ -3,6 +3,7 @@ import cv2
 
 kitti_params_map = {
     "relative_folder": "/datasets/kitti/05/image_0/",
+    "ground_truth_path": "/datasets/kitti/poses/05.txt",
     "bootstrap_frames": [0, 3], # seems optimal
     "bootstrap_detector": "Shi-Tomasi", # or "Shi-Tomasi"
 
@@ -17,7 +18,7 @@ kitti_params_map = {
     "vo_continuous_detector": "Harris", # or "Shi-Tomasi"
     "max_corners_continuous": 1000, # Harris and Shi-Tomasi
     "quality_level_continuous": 0.00001, # Harris and Shi-Tomasi
-    "min_distance_continuous": 7, # Harris and Shi-Tomasi
+    "min_distance_continuous": 9, # Harris and Shi-Tomasi
     "k_continuous": 0.05, # Harris only
 
     # KLT (association)
