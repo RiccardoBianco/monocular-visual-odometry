@@ -21,18 +21,16 @@ def on_key_press(event):
 def start_key_listener(fig):
     fig.canvas.mpl_connect('key_press_event', on_key_press)
 ################################################################
+### Load parameters - CHANGE ONLY THIS ###
+dataset = Dataset.PARKING  # or Dataset.PARKING or Dataset.MALAGA
 
-### Plotting options #######
+### Plotting options - eventually change these #######
 plot_bootstrap = False
 plot_dashboard = True
 plot_vo_continuous_inliers_outliers = False
 
-### Load parameters - CHANGE HERE###
-dataset = Dataset.PARKING  # or Dataset.PARKING or Dataset.MALAGA
-params = load_parameters(Dataset.PARKING)
-
-
 ### Utils #######
+params = load_parameters(dataset)
 file_relative_folder = os.path.dirname(__file__)
 
 lk_params = dict(winSize=params['winSize'],
@@ -40,10 +38,10 @@ lk_params = dict(winSize=params['winSize'],
         criteria=params['criteria'])
     
 
-def vo_bootstrap(frame1_color, frame2_color, K):
-    # Load frames
-    frame1 = cv2.cvtColor(frame1_color, cv2.COLOR_BGR2GRAY)
-    frame2 = cv2.cvtColor(frame2_color, cv2.COLOR_BGR2GRAY)
+def vo_bootstrap(frame2_color, frame1, frame2, K):
+    # Load frames --> this gives problems
+    # frame1 = cv2.cvtColor(frame1_color, cv2.COLOR_BGR2GRAY)
+    # frame2 = cv2.cvtColor(frame2_color, cv2.COLOR_BGR2GRAY)
     
     # Detect keypoints in the first frame
     # Harris returns the right transformation [1,0,0], Shi returns [-1,0,0], probably bcs from cam2 frame (?) although it should be the opposite
@@ -156,7 +154,7 @@ def vo_bootstrap(frame1_color, frame2_color, K):
     return frame2, inlier_tracked_corners.reshape(-1,1,2), pts3D, R, t
 
 
-def vo_continuous(new_image, K, state, min_landmarks=150, min_baseline_angle=5.0):
+def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=150, min_baseline_angle=5.0):
     """
     Process a new frame for continuous visual odometry using a stateful approach.
     
@@ -182,8 +180,6 @@ def vo_continuous(new_image, K, state, min_landmarks=150, min_baseline_angle=5.0
     # Load new frame
     # current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
     # current_frame = cv2.imread(new_frame_path, cv2.IMREAD_GRAYSCALE)
-    current_frame_color = new_image
-    current_frame = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2GRAY)
     
     prev_frame = state['db_image']
 
@@ -254,7 +250,7 @@ def vo_continuous(new_image, K, state, min_landmarks=150, min_baseline_angle=5.0
     outlier_points = None
     outlier_tracked_points = None
     R_new, t_new = R_prev, t_prev
-    if X.shape[0] >= 40:
+    if X.shape[0] >= params['PnP_min_landmarks']:
         ifset.add(5)
         objectPoints = X.reshape(-1,3)
         imagePoints = P.reshape(-1,2)
@@ -264,13 +260,13 @@ def vo_continuous(new_image, K, state, min_landmarks=150, min_baseline_angle=5.0
                 objectPoints, imagePoints, K, distCoeffs,
                 reprojectionError=params['PnP_reprojection_error'],
                 flags=params['PnP_method'],
-                # confidence=params['RANSAC_PnP_confidence'],
+                confidence=params['RANSAC_PnP_confidence'],
             )
         else:
             success, rvec, tvec, inliers = cv2.solvePnPRansac(
                 objectPoints, imagePoints, K, distCoeffs,
                 flags=params['PnP_method'],
-                # confidence=params['RANSAC_PnP_confidence'],
+                confidence=params['RANSAC_PnP_confidence'],
             )
         
         if success and inliers is not None and len(inliers) > 0:
@@ -619,10 +615,7 @@ if __name__ == "__main__":
                     [  0,      0,      1]])
     
     elif dataset == Dataset.MALAGA:
-        frame_1_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.580023_left.jpg"
-        frame_2_relative_folder = "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/img_CAMERA1_1261229981.680019_left.jpg"
-        
-        images = sorted(os.listdir(os.path.dirname(__file__) + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images"))
+        images = sorted(os.listdir(file_relative_folder + params['relative_folder']))
         left_images = images[2::2]
         images = left_images
         last_frame = len(left_images) - 1
@@ -632,20 +625,23 @@ if __name__ == "__main__":
                     [0, 0, 1]])
         
     elif dataset == Dataset.KITTI:
-        ground_truth = np.loadtxt("/poses/05.txt")
+        ground_truth = np.loadtxt(file_relative_folder + "/datasets/kitti/poses/05.txt")
         ground_truth = ground_truth[:, [3, 11]]
-        images = sorted(os.listdir(os.path.dirname(__file__) + "/datasets/kitti/05/image_0"))
+        images = sorted(os.listdir(file_relative_folder + params['relative_folder']))
         last_frame = len(images) - 1
+
         K = np.array([[7.188560000000e+02, 0, 6.071928000000e+02],
                     [0, 7.188560000000e+02, 1.852157000000e+02],
                     [0, 0, 1]])
         
     
-    frame1_color = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][0]], cv2.IMREAD_COLOR)
     frame2_color = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][1]], cv2.IMREAD_COLOR)
+
+    frame1_gray = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][0]], cv2.IMREAD_GRAYSCALE)
+    frame2_gray = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][1]], cv2.IMREAD_GRAYSCALE)
     
     # Bootstrap
-    db_image, db_keypoints, db_landmarks, R, t = vo_bootstrap(frame1_color, frame2_color, K)
+    db_image, db_keypoints, db_landmarks, R, t = vo_bootstrap(frame2_color, frame1_gray, frame2_gray, K)
     # db_landmarks is (3, N), transpose to (N, 3)
     db_landmarks = db_landmarks.T
 
@@ -684,13 +680,16 @@ if __name__ == "__main__":
 
         if dataset == Dataset.PARKING:
             new_image = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_COLOR)
+            new_image_gray = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_GRAYSCALE)
         elif dataset == Dataset.MALAGA:
             new_image = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_COLOR)
+            new_image_gray = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_GRAYSCALE)
         elif dataset == Dataset.KITTI:
             new_image = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_COLOR)
+            new_image_gray = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_GRAYSCALE)
 
         # Perform continuous VO step
-        state = vo_continuous(new_image, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
+        state = vo_continuous(new_image, new_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
 
         if plot_dashboard:
             ifset.add(21)

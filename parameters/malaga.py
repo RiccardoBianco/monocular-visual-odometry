@@ -1,38 +1,37 @@
 import cv2
 
+
 malaga_params_map = {
-    "bootstrap_frames": [0, 3],
+    "relative_folder": "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/",
+    "bootstrap_frames": [550, 553], # seems optimal
+    "bootstrap_detector": "Shi-Tomasi", # or "Shi-Tomasi"
 
     # bootstrap parameters (initialization)
-    "match_per_descriptor": 2,  # SIFT
-    "match_treshold": 0.8,  # SIFT
-    "repojection_error_tollerance": 0.9,  # Essential matrix Ransac (in pixels)
-    "p5p_confidence": 0.9999,  # Essential matrix Ransac
+    "RANSAC_Essential_Matrix_confidence": 0.99, # Essential matrix Ransac
+    "max_corners_bootstrap": 1000, # Harris and Shi-Tomasi
+    "quality_level_bootstrap": 0.00001, # Harris and Shi-Tomasi
+    "min_distance_bootstrap": 5, # Harris and Shi-Tomasi
+    "k_bootstrap": 0.03, # Harris only
+
+    # vo_continuous detector
+    "vo_continuous_detector": "Harris", # or "Shi-Tomasi"
+    "max_corners_continuous": 1000, # Harris and Shi-Tomasi
+    "quality_level_continuous": 0.00001, # Harris and Shi-Tomasi
+    "min_distance_continuous": 7, # Harris and Shi-Tomasi
+    "k_continuous": 0.05, # Harris only
 
     # KLT (association)
-    "error_threshold": 10,  # KLT
-    "winSize": (30, 30),  # KLT
-    "maxLevel": 3,  # KLT
-    "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.001),  # KLT
+    "KLT_threshold": 20, # KLT
+    "winSize": (30, 30), # KLT
+    "maxLevel": 3, # KLT
+    "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.001), # KLT
 
     # PnP (estimate_pose)
-    "reprojection_error": 1,  # PnP RANSAC
-    "pnp_confidence_": 0.999,  # PnP RANSAC
-
-    # Harris (evaluate_points)
-    "block_size": 7,  # Harris block_size
-    "k_size": 5,  # Harris k_zie
-    "k": 0.04,  # Harris magic number
-    "num_corners": 300,  # Harris num of corner to extract
-    "suppression_radius": 7,  # Harris suppression radius
-    "min_distance": 8,  # Harris minimum distance from other keypoints
+    "PnP_min_landmarks": 10, # Minimum number of landmarks to estimate pose
+    "RANSAC_PnP_confidence" : 0.999, # PnP RANSAC
+    "PnP_reprojection_error" : 5, # PnP reprojection error
+    "PnP_method" : cv2.SOLVEPNP_ITERATIVE, # PnP method, or cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_P3P
 
     # Triangulate (triangulate_candidates, process_frame)
-    "distance_threshold": 1,  # Distance to the previous frames in start triangulate
-    "min_number_keypoints": 120,  # Minimum number of keypoints to have
-    "max_inlier_ratio": 0.3,  # Keypoints cannot drop under this ratio between 2 consecutives frames
-    "thumb_rule": 0.2,  # Rule to start trinagulate points
-    "min_reprojection_error": 1,
-    "distance_threshold_factor": 2,
-
+    "min_baseline_angle": 5, # Minimum bearing angle to allow triangulation
 }

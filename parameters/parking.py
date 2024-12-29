@@ -1,6 +1,8 @@
 import cv2
 
 # TUNED
+# there's another working well version with 1000 corners and 0.99 of RANSAC confidence
+# Up to us to check which one is better (memory vs computational efficiency)
 parking_params_map = {
     "relative_folder": "/datasets/parking/images/",
     "bootstrap_frames": [0, 3], # seems optimal
@@ -13,9 +15,9 @@ parking_params_map = {
     "min_distance_bootstrap": 5, # Harris and Shi-Tomasi
     "k_bootstrap": 0.03, # Harris only
 
-    # vo_continuous
+    # vo_continuous detector
     "vo_continuous_detector": "Harris", # or "Shi-Tomasi"
-    "max_corners_continuous": 1000, # Harris and Shi-Tomasi
+    "max_corners_continuous": 500, # Harris and Shi-Tomasi
     "quality_level_continuous": 0.00001, # Harris and Shi-Tomasi
     "min_distance_continuous": 7, # Harris and Shi-Tomasi
     "k_continuous": 0.05, # Harris only
@@ -28,16 +30,11 @@ parking_params_map = {
     "criteria": (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.001), # KLT
 
     # PnP (estimate_pose)
-    "RANSAC_PnP_confidence" : 0.999, # PnP RANSAC
+    "PnP_min_landmarks": 40, # Minimum number of landmarks to estimate pose
+    "RANSAC_PnP_confidence" : 0.9999, # PnP RANSAC
     "PnP_reprojection_error" : 5, # PnP reprojection error
     "PnP_method" : cv2.SOLVEPNP_ITERATIVE, # PnP method, or cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_P3P
 
     # Triangulate (triangulate_candidates, process_frame)
     "min_baseline_angle": 10, # Minimum bearing angle to allow triangulation
-    # "distance_threshold": 1, # Distance to the previous frames in start triangulate
-    # "min_number_keypoints": 120 ,# Minimum number of keypoints to have
-    # "max_inlier_ratio": 0.3, # Keypoints cannot drop under this ratio between 2 consecutives frames
-    # "thumb_rule": 0.2, # Rule to start trinagulate points
-    # "min_reprojection_error": 1,
-    # "distance_threshold_factor": 2,
 }
