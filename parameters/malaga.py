@@ -28,10 +28,10 @@ malaga_params_map = {
 
     # PnP (estimate_pose)
     "PnP_min_landmarks": 10, # Minimum number of landmarks to estimate pose
-    "RANSAC_PnP_confidence" : 0.999, # PnP RANSAC
-    "PnP_reprojection_error" : 5, # PnP reprojection error
+    "RANSAC_PnP_confidence" : 0.9999, # PnP RANSAC
+    "PnP_reprojection_error" : 3, # PnP reprojection error
     "PnP_method" : cv2.SOLVEPNP_ITERATIVE, # PnP method, or cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_P3P
 
     # Triangulate (triangulate_candidates, process_frame)
-    "min_baseline_angle": 5, # Minimum bearing angle to allow triangulation
+    "min_baseline_angle": 3, # Minimum bearing angle to allow triangulation
 }

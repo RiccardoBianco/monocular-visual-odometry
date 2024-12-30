@@ -20,11 +20,12 @@ def start_key_listener(fig):
     fig.canvas.mpl_connect('key_press_event', on_key_press)
 ################################################################
 ### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.KITTI  # or Dataset.PARKING or Dataset.MALAGA
+dataset = Dataset.MALAGA  # or Dataset.PARKING or Dataset.MALAGA
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
 plot_dashboard = True
+plot_ground_truth = False
 plot_vo_continuous_inliers_outliers = False
 
 ### Utils #######
@@ -291,7 +292,7 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
         # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
         current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
 
-
+    # if outlier_tracked_points is not None and outlier_tracked_points.shape[0] > 0:
     for (new, old) in zip(outlier_tracked_points, outlier_points):
         a, b = new.ravel()
         c, d = old.ravel()
@@ -472,7 +473,7 @@ def update_dashboard(
         # Plot ground truth trajectory
         ax_trajectory_full.clear()
 
-        if dataset != Dataset.MALAGA:
+        if plot_ground_truth and dataset != Dataset.MALAGA:
             ground_truth_file = file_relative_folder + params['ground_truth_path']
             if os.path.exists(ground_truth_file):
                 ground_truth_data = np.loadtxt(ground_truth_file)
@@ -591,8 +592,18 @@ if __name__ == "__main__":
 
             t_dashboard = -np.matmul(R_new.T, t_new)
             
-            print("Frame ", i,": t_dashboard\n", t_dashboard)
+            # if len(full_trajectory) > 1:
+            #     distances = [np.linalg.norm(np.array(full_trajectory[j]) - np.array(full_trajectory[j-1])) for j in range(1, len(full_trajectory))]
+            #     avg_distance = np.mean(distances)
+            #     last_point = np.array(full_trajectory[-1])
+            #     current_point = np.array([t_dashboard[0], t_dashboard[2]])
+            #     if np.linalg.norm(current_point - last_point) < 200 * avg_distance:
+            #         full_trajectory.append((t_dashboard[0], t_dashboard[2]))
+            #     else:
+            #         print("Point not added to trajectory.")
+            # else:
             full_trajectory.append((t_dashboard[0], t_dashboard[2]))
+                
 
             # current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
             current_frame_color = new_image
