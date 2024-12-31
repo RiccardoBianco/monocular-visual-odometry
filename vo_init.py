@@ -4,6 +4,7 @@ import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from params_loader import load_parameters, Dataset
+import copy
 
 ################  DASHBOARD UTILITY  ############################
 # Define a global flag
@@ -28,13 +29,77 @@ plot_dashboard = True
 plot_ground_truth = False
 plot_vo_continuous_inliers_outliers = False
 
-### Utils #######
+# Load parameters
 params = load_parameters(dataset)
+base_params = copy.deepcopy(params)  # Keep a copy of the original parameters
+
+
+# Define the ordered list of parameters to adjust
+adjustment_steps = [
+    'RANSAC_PnP_confidence',
+    'PnP_reprojection_error',
+    'quality_level_continuous',
+    'max_corners_continuous',
+    'KLT_threshold',
+    'min_distance_continuous'
+]
+
+
+# Initialize tracking variables
+consecutive_pnp_failures = 0
+MAX_CONSECUTIVE_FAILURES = len(adjustment_steps)  # Maximum allowed adjustments
+current_adjustment_step = 0  # Index to track which parameter to adjust next
+
 file_relative_folder = os.path.dirname(__file__)
 
 lk_params = dict(winSize=params['winSize'],
         maxLevel=params['maxLevel'],
         criteria=params['criteria'])
+
+def adjust_params(params, step):
+    """
+    Adjust a single parameter to be more lenient based on the current step.
+    
+    Parameters:
+    - params (dict): Current parameters dictionary.
+    - step (int): The current adjustment step index.
+    """
+    if step >= len(adjustment_steps):
+        print("All adjustment steps have been exhausted.")
+        return
+    
+    param_to_adjust = adjustment_steps[step]
+    print(f"Adjusting parameter: {param_to_adjust}")
+    
+    if param_to_adjust == 'quality_level_continuous':
+        params['quality_level_continuous'] = max(params['quality_level_continuous'] * 0.8, 0.00001)
+    
+    elif param_to_adjust == 'max_corners_continuous':
+        params['max_corners_continuous'] = min(params['max_corners_continuous'] + 50, 1000)
+    
+    elif param_to_adjust == 'KLT_threshold':
+        params['KLT_threshold'] = min(params['KLT_threshold'] * 1.2, 100.0)  # Example upper limit
+    
+    elif param_to_adjust == 'min_distance_continuous':
+        params['min_distance_continuous'] = max(params['min_distance_continuous'] - 1, 5)  # Example lower limit
+    
+    elif param_to_adjust == 'RANSAC_PnP_confidence':
+        params['RANSAC_PnP_confidence'] = min(params['RANSAC_PnP_confidence'] * 1.1, 0.9999)  # Gradually increase confidence
+    
+    elif param_to_adjust == 'PnP_reprojection_error':
+        params['PnP_reprojection_error'] = max(params['PnP_reprojection_error'] + 1, 3)  # Example lower limit
+    
+    print(f"Adjusted {param_to_adjust}: {params[param_to_adjust]}")
+
+
+def reset_params(params, base_params):
+    """
+    Reset parameters to their original values.
+    """
+    print("Resetting parameters to base configuration...")
+    params.clear()
+    params.update(copy.deepcopy(base_params))
+
     
 
 def vo_bootstrap(frame2_color, frame1, frame2, K):
@@ -235,12 +300,16 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
     X = X_tracked
     C = C_tracked
 
+
+    pnp_success = False
+
     # 3. Pose estimation with PnP
     inlier_points = None
     inlier_tracked_points = None
     outlier_points = None
     outlier_tracked_points = None
     R_new, t_new = R_prev, t_prev
+
     if X.shape[0] >= params['PnP_min_landmarks']:
         objectPoints = X.reshape(-1,3)
         imagePoints = P.reshape(-1,2)
@@ -279,25 +348,25 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
             # print("PnP successful...printing new pose:")
             # print("Rotation matrix: \n", R_new)
             # print("Translation vector: \n", t_new)
+            pnp_success = True
         else:
             print("PnP failed...keeping previous pose.")
     else:
         print("Not enough landmarks for PnP...keeping previous pose.")
 
     # Visualize db_keypoints inliers and outliers
-    # if inlier_tracked_points is not None and inlier_tracked_points.shape[0] > 0:
-    for (new, old) in zip(inlier_tracked_points, inlier_points):
-        a, b = new.ravel()
-        c, d = old.ravel()
-        # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
-        current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
+    if pnp_success: 
+        for (new, old) in zip(inlier_tracked_points, inlier_points):
+            a, b = new.ravel()
+            c, d = old.ravel()
+            # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
+            current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
 
-    # if outlier_tracked_points is not None and outlier_tracked_points.shape[0] > 0:
-    for (new, old) in zip(outlier_tracked_points, outlier_points):
-        a, b = new.ravel()
-        c, d = old.ravel()
-        # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
-        current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
+        for (new, old) in zip(outlier_tracked_points, outlier_points):
+            a, b = new.ravel()
+            c, d = old.ravel()
+            # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
+            current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
 
     # 4. Add new candidate keypoints
     if params['vo_continuous_detector'] == 'Shi-Tomasi':
@@ -406,7 +475,7 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
     state['R'] = R_new
     state['t'] = t_new
 
-    return state
+    return state, pnp_success
 
 def update_dashboard(
         ax_img, ax_landmark_count, ax_trajectory_partial, ax_trajectory_full,
@@ -583,7 +652,23 @@ if __name__ == "__main__":
             new_image_gray = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_GRAYSCALE)
 
         # Perform continuous VO step
-        state = vo_continuous(new_image, new_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
+        state, pnp_success = vo_continuous(new_image, new_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
+
+        # Handle parameter adjustments based on PnP success
+        if pnp_success:
+            if consecutive_pnp_failures >= 1:
+                reset_params(params, base_params)
+                current_adjustment_step = 0  # Reset adjustment step
+            consecutive_pnp_failures = 0  # Reset failure counter
+        else:
+            consecutive_pnp_failures += 1
+            if consecutive_pnp_failures <= MAX_CONSECUTIVE_FAILURES and current_adjustment_step < len(adjustment_steps):
+                adjust_params(params, current_adjustment_step)
+                current_adjustment_step += 1
+            else:
+                print(f"Exceeded maximum consecutive PnP failures: {consecutive_pnp_failures}")
+                # Optionally, implement additional handling here (e.g., skip frame, reinitialize, etc.)
+        
 
         if plot_dashboard:
             # state['R'], state['t'] is the pose from the previous frame’s coordinate system

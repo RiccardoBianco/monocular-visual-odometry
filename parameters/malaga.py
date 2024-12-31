@@ -1,9 +1,10 @@
 import cv2
 
+init_step = 1000
 
 malaga_params_map = {
     "relative_folder": "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/",
-    "bootstrap_frames": [550, 553], # seems optimal
+    "bootstrap_frames": [init_step, init_step+3], # seems optimal
     "bootstrap_detector": "Shi-Tomasi", # or "Shi-Tomasi"
 
     # bootstrap parameters (initialization)
