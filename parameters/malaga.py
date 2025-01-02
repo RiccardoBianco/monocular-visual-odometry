@@ -3,7 +3,7 @@ import cv2
 
 malaga_params_map = {
     "relative_folder": "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/",
-    "bootstrap_frames": [550, 553], # seems optimal
+    "bootstrap_frames": [0, 3], # seems optimal
     "bootstrap_detector": "Shi-Tomasi", # or "Shi-Tomasi"
 
     # bootstrap parameters (initialization)
@@ -33,5 +33,5 @@ malaga_params_map = {
     "PnP_method" : cv2.SOLVEPNP_ITERATIVE, # PnP method, or cv2.SOLVEPNP_EPNP, cv2.SOLVEPNP_P3P
 
     # Triangulate (triangulate_candidates, process_frame)
-    "min_baseline_angle": 3, # Minimum bearing angle to allow triangulation
+    "min_baseline_angle": 1, # Minimum bearing angle to allow triangulation
 }

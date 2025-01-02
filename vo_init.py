@@ -362,11 +362,17 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
             pt_current_norm = np.linalg.inv(K).dot(np.array([c_current[0,0], c_current[0,1], 1.0]))
             pt_first_norm = np.linalg.inv(K).dot(np.array([c_first[0,0], c_first[0,1], 1.0]))
 
-            # Compute the angle between the 2 vectors (same fixed z=1, only u,v changes)
-            angle = np.degrees(np.arccos(
-                np.clip(np.dot(pt_current_norm/np.linalg.norm(pt_current_norm),
-                       pt_first_norm/np.linalg.norm(pt_first_norm)),-1.0,1.0)
+            # Transform bearing vectors to world coordinates based on camera poses
+            bearing_current = R_new.T @ pt_current_norm + R_new.T @ t_new.transpose().flatten()
+            bearing_first = R_f.T @ pt_first_norm + R_f.T @ t_f.transpose().flatten()
+
+            # Compute the angle between the bearing vectors
+            alpha_c = np.degrees(np.arccos(
+                np.clip(np.dot(bearing_current / np.linalg.norm(bearing_current),
+                               bearing_first / np.linalg.norm(bearing_first)), -1.0, 1.0)
             ))
+
+            angle = alpha_c
 
             if angle > min_baseline_angle:
                 P_first = K @ np.hstack((R_f, t_f))
@@ -442,8 +448,10 @@ def update_dashboard(
         # 1) Current image with keypoints
         ax_img.clear()
         # Convert BGR to RGB for matplotlib
-        img_rgb = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2RGB)
-        ax_img.imshow(img_rgb)
+        # img_rgb = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2RGB)
+        # ax_img.imshow(img_rgb)
+        img_gray = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2GRAY)
+        ax_img.imshow(img_gray,cmap='gray')
         ax_img.set_title("Current image")
         ax_img.set_aspect('equal', adjustable='box')
 
