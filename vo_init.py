@@ -4,24 +4,9 @@ import os
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from params_loader import load_parameters, Dataset
-import copy
 
-################  DASHBOARD UTILITY  ############################
-# Define a global flag
-stop_pipeline = False
-
-
-def on_key_press(event):
-    global stop_pipeline
-    if event.key == ' ':
-        print("Stop signal received.")
-        stop_pipeline = True
-
-def start_key_listener(fig):
-    fig.canvas.mpl_connect('key_press_event', on_key_press)
-################################################################
-### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.MALAGA  # or Dataset.PARKING or Dataset.MALAGA
+# Set the dataset
+dataset = Dataset.MALAGA  
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
@@ -31,351 +16,184 @@ plot_vo_continuous_inliers_outliers = False
 
 # Load parameters
 params = load_parameters(dataset)
-base_params = copy.deepcopy(params)  # Keep a copy of the original parameters
-
-
-# Define the ordered list of parameters to adjust
-adjustment_steps = [
-    'RANSAC_PnP_confidence',
-    'PnP_reprojection_error',
-    'quality_level_continuous',
-    'max_corners_continuous',
-    'KLT_threshold',
-    'min_distance_continuous'
-]
-
-
-# Initialize tracking variables
-consecutive_pnp_failures = 0
-MAX_CONSECUTIVE_FAILURES = len(adjustment_steps)  # Maximum allowed adjustments
-current_adjustment_step = 0  # Index to track which parameter to adjust next
 
 file_relative_folder = os.path.dirname(__file__)
+
+state = {
+    'P': None,       # (2xN) - keypoints
+    'X': None,       # (3xN) - landmarks
+    'R': None,       # (3x3) - rotation
+    't': None,       # (3x1) - translation,
+    'C': None,       # (2xM) - candidate keypoints
+    'F': None,       # (2xM) - first observation of candidate keypoints
+    'T': None,       # (12xM) - poses for first observation of each candidate
+}
 
 lk_params = dict(winSize=params['winSize'],
         maxLevel=params['maxLevel'],
         criteria=params['criteria'])
 
-def adjust_params(params, step):
-    """
-    Adjust a single parameter to be more lenient based on the current step.
-    
-    Parameters:
-    - params (dict): Current parameters dictionary.
-    - step (int): The current adjustment step index.
-    """
-    if step >= len(adjustment_steps):
-        print("All adjustment steps have been exhausted.")
-        return
-    
-    param_to_adjust = adjustment_steps[step]
-    print(f"Adjusting parameter: {param_to_adjust}")
-    
-    if param_to_adjust == 'quality_level_continuous':
-        params['quality_level_continuous'] = max(params['quality_level_continuous'] * 0.8, 0.00001)
-    
-    elif param_to_adjust == 'max_corners_continuous':
-        params['max_corners_continuous'] = min(params['max_corners_continuous'] + 50, 1000)
-    
-    elif param_to_adjust == 'KLT_threshold':
-        params['KLT_threshold'] = min(params['KLT_threshold'] * 1.2, 100.0)  # Example upper limit
-    
-    elif param_to_adjust == 'min_distance_continuous':
-        params['min_distance_continuous'] = max(params['min_distance_continuous'] - 1, 5)  # Example lower limit
-    
-    elif param_to_adjust == 'RANSAC_PnP_confidence':
-        params['RANSAC_PnP_confidence'] = min(params['RANSAC_PnP_confidence'] * 1.1, 0.9999)  # Gradually increase confidence
-    
-    elif param_to_adjust == 'PnP_reprojection_error':
-        params['PnP_reprojection_error'] = max(params['PnP_reprojection_error'] + 1, 3)  # Example lower limit
-    
-    print(f"Adjusted {param_to_adjust}: {params[param_to_adjust]}")
-
-
-def reset_params(params, base_params):
-    """
-    Reset parameters to their original values.
-    """
-    print("Resetting parameters to base configuration...")
-    params.clear()
-    params.update(copy.deepcopy(base_params))
-
-    
-
 def vo_bootstrap(frame2_color, frame1, frame2, K):
-    # Load frames --> this gives problems
-    # frame1 = cv2.cvtColor(frame1_color, cv2.COLOR_BGR2GRAY)
-    # frame2 = cv2.cvtColor(frame2_color, cv2.COLOR_BGR2GRAY)
+    sift = cv2.SIFT_create()
+    kp1, des1 = sift.detectAndCompute(frame1, None)
+    kp2, des2 = sift.detectAndCompute(frame2, None)
+
+    # Match keypoints
+    bf = cv2.BFMatcher()
+    matches = bf.knnMatch(des1, des2, k=2) # TODO match_per_descriptors
+
+    good_matches = []
+    for m, n in matches:
+        if m.distance < params['ratio_test'] * n.distance:
+            good_matches.append(m)
+
+    # Get the keypoints from the good matches
+    keypoints_frame_1 = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
+    keypoints_frame_2 = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 2)
+
+    E, mask = cv2.findEssentialMat(keypoints_frame_1, keypoints_frame_2, K, method=cv2.RANSAC, prob=params['RANSAC_Essential_Matrix_confidence'], threshold=1) # TODO check parameters
+
+    inliers_frame_1 = keypoints_frame_1[mask.ravel() == 1]
+    inliers_frame_2 = keypoints_frame_2[mask.ravel() == 1]
+    outliers_frame_1 = keypoints_frame_1[mask.ravel() == 0]
+    outliers_frame_2 = keypoints_frame_2[mask.ravel() == 0]
+
+    # TODO dashboard
     
-    # Detect keypoints in the first frame
-    # Harris returns the right transformation [1,0,0], Shi returns [-1,0,0], probably bcs from cam2 frame (?) although it should be the opposite
-    # quality-level: higher is stricter (discard all the ones with quality < x * max_quality)
-    if params['bootstrap_detector'] == 'Shi-Tomasi':
-        corners = cv2.goodFeaturesToTrack(frame1, 
-                                          maxCorners=params['max_corners_bootstrap'], 
-                                          qualityLevel=params['quality_level_bootstrap'], 
-                                          minDistance=params['min_distance_bootstrap']) # [-0.99,0.0,-0.04]
-        # corners = cv2.goodFeaturesToTrack(frame1, maxCorners=150, qualityLevel=0.000011, minDistance=5) # [0.93,-0.04,0.35]
-    elif params['bootstrap_detector'] == 'Harris':
-        corners = cv2.goodFeaturesToTrack(frame1, 
-                                          maxCorners=params['max_corners_bootstrap'], 
-                                          qualityLevel=params['quality_level_bootstrap'], 
-                                          minDistance=params['min_distance_bootstrap'],
-                                          useHarrisDetector=True,
-                                          k=params['k_bootstrap']) # [0.99,0.0,-0.12]
-        # Interesting fact to prove how sensitive these params are... 
-        # with minDistance=5 and k=0.03, it returns [ 0.99,0.0,-0.1]
-        # with minDistance=7 and k=0.03, it returns [-0.92,0.0, 0.3]...
-
-    # Track keypoints to the second frame
-    
-    tracked_points, status, error = cv2.calcOpticalFlowPyrLK(frame1, frame2, corners, nextPts=None, **lk_params)
-    if error is not None:
-        valid_keypoints_mask = error < params['KLT_threshold']
-        mask_KLT = np.logical_and(valid_keypoints_mask, status)
-    else:
-        mask_KLT = status
-
-    valid_corners = corners[mask_KLT == 1]
-    valid_tracked_corners = tracked_points[mask_KLT == 1]
-
-    # Visualize tracked points
-    for (new, old) in zip(valid_tracked_corners, valid_corners):
-        a, b = new.ravel()
-        c, d = old.ravel()
-        frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1)
-        frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (255, 0, 0), 2)
-    
-    if plot_bootstrap == True:
-        plt.figure()
-        plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
-        plt.title('Tracked Points')
-
-    valid_corners = np.float32(valid_corners)
-    valid_tracked_corners = np.float32(valid_tracked_corners)
-
-    # Compute essential matrix and pose
-    E, mask = cv2.findEssentialMat(valid_corners, valid_tracked_corners, K, method=cv2.RANSAC, prob=params['RANSAC_Essential_Matrix_confidence'], threshold=1)
-    _, R, t, mask_pose = cv2.recoverPose(E, valid_corners, valid_tracked_corners, K)
-    # t = -t
-
-    # print("Rotation matrix: \n", R)
-    # print("Translation vector: \n", t)
-
-    # Combine masks to determine final inliers and outliers
-    final_mask = (mask.ravel() == 1) & (mask_pose.ravel() == 255)
-
-    # Filter inliers and outliers
-    inlier_corners = valid_corners[final_mask]
-    inlier_tracked_corners = valid_tracked_corners[final_mask]
-
-    outlier_corners = valid_corners[~final_mask]
-    outlier_tracked_corners = valid_tracked_corners[~final_mask]
-
     # Visualize inliers and outliers
-    for (new, old) in zip(inlier_tracked_corners, inlier_corners):
+    for (new, old) in zip(inliers_frame_2, inliers_frame_1):
         a, b = new.ravel()
         c, d = old.ravel()
         frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
         frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
 
-    for (new, old) in zip(outlier_tracked_corners, outlier_corners):
+    for (new, old) in zip(outliers_frame_2, outliers_frame_1):
         a, b = new.ravel()
         c, d = old.ravel()
         frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
         frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
-
+    
+    _, R, t, _ = cv2.recoverPose(E, keypoints_frame_1, keypoints_frame_2, K)
 
     # Triangulate 3D points
-    P1 = np.dot(K, np.hstack((np.eye(3), np.zeros((3, 1)))))  # First frame pose: Identity
-    P2 = np.dot(K, np.hstack((R, t)))  # Second frame pose
+    P1 = K @ np.hstack((np.eye(3), np.zeros((3,1))))  # First frame pose
+    P2 = K @ np.hstack((R, t))  # Second frame pose
 
-    pts4D = cv2.triangulatePoints(P1, P2, inlier_corners.T, inlier_tracked_corners.T)
-    pts3D = pts4D[:3] / pts4D[3]  # shape (3, N)
+    pts4D = cv2.triangulatePoints(P1, P2, keypoints_frame_1.T, keypoints_frame_2.T)
+    pts3D = pts4D[:3, :] / pts4D[3, :]  # shape (3, N)
 
-    # Plot 3D landmarks
-    if plot_bootstrap == True:
-        plt.figure()
-        plt.imshow(cv2.cvtColor(frame2_color, cv2.COLOR_BGR2RGB))
-        plt.title('Inliers (Green) and Outliers (Red)')
+    # TODO filter landmark behind the camera if Z < 0 for some reason
 
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(pts3D[0], pts3D[1], pts3D[2], c='r', marker='o', label='3D Points')
+    # Update state
+    state["P"] = keypoints_frame_2.T 
+    state["X"] = pts3D
+    state["R"] = R
+    state["t"] = t
 
-        camera_center1 = np.array([0, 0, 0])
-        ax.scatter(*camera_center1, c='blue', marker='^', s=100, label='Camera 1')
-
-        camera_center2 = camera_center1 + t.ravel()
-        ax.scatter(*camera_center2, c='green', marker='^', s=100, label='Camera 2')
-
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.legend()
-
-    # Return the second frame and the tracked keypoints as initialization
-    return frame2, inlier_tracked_corners.reshape(-1,1,2), pts3D, R, t
+    return
 
 
-def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=150, min_baseline_angle=5.0):
-    """
-    Process a new frame for continuous visual odometry using a stateful approach.
-    
-    Parameters:
-    - new_frame_path: path to the next image frame
-    - K: Camera intrinsic matrix
-    - state: dictionary containing
-        {
-          'db_image': previous grayscale frame,
-          'P': array of shape (N,1,2) known landmark keypoints (2D)
-          'X': array of shape (N,3) landmarks (3D)
-          'R', 't': previous camera pose
-          'C': candidate keypoints (M,1,2)
-          'F': first observation of candidate keypoints (M,1,2)
-          'T': list of (R_f, t_f) poses for first observation of each candidate
-        }
-    - min_landmarks: minimum number of landmarks required
-    - min_baseline_angle: angle threshold for triangulation [radians]
+def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmarks=150, min_baseline_angle=5.0):
 
-    Returns:
-    Updated state dictionary.
-    """
-    # Load new frame
-    # current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
-    # current_frame = cv2.imread(new_frame_path, cv2.IMREAD_GRAYSCALE)
-    
-    prev_frame = state['db_image']
+    P_prev = state['P']
+    X_prev = state['X']
+    C_prev = state['C']
 
-    P = state['P']
-    X = state['X']
-    C = state['C']
-    F_first = state['F']
-    T_first = state['T']
     R_prev = state['R']
     t_prev = state['t']
     
-    # 1. Track db_keypoints
-    if P is not None and P.shape[0] > 0:
-        tracked_points, status, error = cv2.calcOpticalFlowPyrLK(prev_frame, current_frame, P, nextPts=None, **lk_params)
-        if error is not None:
-            valid_keypoints_mask = error < params['KLT_threshold']
-            final_mask_db = np.logical_and(valid_keypoints_mask, status)
-        else:
-            final_mask_db = status
-        # num_errors_over_30 = np.sum(error > 30)
-        # print(f"Number of errors > 30: {num_errors_over_30}")
-        
-        valid_idx = final_mask_db.flatten() == 1
-        
-        valid_corners = P[valid_idx]
-        P_tracked = tracked_points[valid_idx]
-        X_tracked = X[valid_idx]
+    # 1. Track keypoints
+    tracked_keypoints, status, error = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, P_prev, nextPts=None, **lk_params)
+    if error is not None:
+        mask_kp = error < params['KLT_threshold']
+        final_mask_kp = np.logical_and(mask_kp, status)
     else:
-        print("DB keypoints are empty. Resetting P and X...")
-        P_tracked = np.empty((0,1,2), dtype=np.float32)
-        X_tracked = np.empty((0,3), dtype=np.float32)
+        final_mask_kp = status
+
+    P_tracked = tracked_keypoints[final_mask_kp.flatten() == 1]
+    X_tracked = X_prev[final_mask_kp.flatten() == 1] # TODO check dimensions
 
     # 2. Track candidate keypoints
-    if C is not None and C.shape[0] > 0:
-        C_tracked, status_c, error = cv2.calcOpticalFlowPyrLK(prev_frame, current_frame, C, nextPts=None, **lk_params)
+    if C_prev is not None:
+        C_tracked, status_c, error_c = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, C, nextPts=None, **lk_params)
         if error is not None:
-            valid_keypoints_mask = error < params['KLT_threshold']
-            final_mask_c = np.logical_and(valid_keypoints_mask, status_c)
+            mask_c = error_c < params['KLT_threshold']
+            final_mask_c = np.logical_and(mask_c, status_c)
         else:
             final_mask_c = status_c
+        if C_tracked is not None:
+            state["C"] = C_tracked[:, final_mask_c == 1] # TODO controllare che C_tracked restituito sia un 2xM
         
-        # valid_candidate_corners = C[final_mask_c == 1]
 
-        valid_c_idx = final_mask_c.flatten() == 1
-        C_tracked = C_tracked[valid_c_idx]
-        F_first = F_first[valid_c_idx]
-        T_first = [T_first[i] for i in range(len(T_first)) if valid_c_idx[i]]
-        
-    else:
-        print("Candidate keypoints are empty. Resetting C...")
-        C_tracked = np.empty((0,1,2), dtype=np.float32)
-
-    P = P_tracked
-    X = X_tracked
-    C = C_tracked
-
-
-    pnp_success = False
 
     # 3. Pose estimation with PnP
-    inlier_points = None
-    inlier_tracked_points = None
-    outlier_points = None
-    outlier_tracked_points = None
-    R_new, t_new = R_prev, t_prev
-
-    if X.shape[0] >= params['PnP_min_landmarks']:
-        objectPoints = X.reshape(-1,3)
-        imagePoints = P.reshape(-1,2)
-        distCoeffs = np.zeros((4,1))
-        if params['PnP_method'] == cv2.SOLVEPNP_ITERATIVE:
-            success, rvec, tvec, inliers = cv2.solvePnPRansac(
-                objectPoints, imagePoints, K, distCoeffs,
-                reprojectionError=params['PnP_reprojection_error'],
-                flags=params['PnP_method'],
-                confidence=params['RANSAC_PnP_confidence'],
-            )
-        else:
-            success, rvec, tvec, inliers = cv2.solvePnPRansac(
-                objectPoints, imagePoints, K, distCoeffs,
-                flags=params['PnP_method'],
-                confidence=params['RANSAC_PnP_confidence'],
-            )
-        
-        if success and inliers is not None and len(inliers) > 0:
-
-            inlier_mask = np.zeros(len(objectPoints), dtype=bool)
-            inlier_mask[inliers.flatten()] = True 
-            
-            # Visualization: Inliers and outliers
-            inlier_points = valid_corners[inlier_mask]
-            inlier_tracked_points = P[inlier_mask]
-
-            outlier_points = valid_corners[~inlier_mask]
-            outlier_tracked_points = P[~inlier_mask] if len(P) > len(inlier_tracked_points) else np.empty((0, 1, 2))
-
-            P = P[inlier_mask]
-            X = X[inlier_mask]
-            R_new, _ = cv2.Rodrigues(rvec)
-            t_new = tvec
-
-            # print("PnP successful...printing new pose:")
-            # print("Rotation matrix: \n", R_new)
-            # print("Translation vector: \n", t_new)
-            pnp_success = True
-        else:
-            print("PnP failed...keeping previous pose.")
+    distCoeffs = np.zeros((4,1)) # TODO oppure none al posto di questo parametro
+    if params['PnP_method'] == cv2.SOLVEPNP_ITERATIVE:
+        success, rvec, tvec, inliers = cv2.solvePnPRansac(
+            X_tracked, P_tracked, K, distCoeffs,
+            reprojectionError=params['PnP_reprojection_error'],
+            flags=params['PnP_method'],
+            confidence=params['RANSAC_PnP_confidence'],
+        )
     else:
-        print("Not enough landmarks for PnP...keeping previous pose.")
+        success, rvec, tvec, inliers = cv2.solvePnPRansac(
+            X_tracked, P_tracked, K, distCoeffs,
+            flags=params['PnP_method'],
+            confidence=params['RANSAC_PnP_confidence'],
+        )
+    if success:
+        R_new, _ = cv2.Rodrigues(rvec)
+        t_new = tvec # TODO tvec.flatten()
+        
+        if inliers is not None:
+            inlier_mask = inliers.flatten() 
+            
+            # Visualization: Inliers and outliers # TODO se vogliamo aggiungere qualcosa qua
+            inliers_keypoints = P_tracked[inlier_mask]
+            inliers_landmarks = X_tracked[inlier_mask]
 
+            outliers_keypoints = P_tracked[~inlier_mask]
+            outliers_landmarks = X_tracked[~inlier_mask]
+
+            P_tracked = P_tracked[inlier_mask]
+            X_tracked = X_tracked[inlier_mask]
+    else:
+        print("PnP failed...keeping previous pose.")
+
+    inlier_ration = P_tracked.shape[0] / P_prev.shape[0] # TODO non fanno esattamente così ma dovrebbero fare così
+    max_inlier_ratio = 0.8 # TODO messo a caso
+    # TODO inliers ration
+    if X_tracked.shape[0] < min_landmarks or inlier_ration < max_inlier_ratio:
+        triangulate = True 
+
+    state["X"] = X_tracked
+    state["P"] = P_tracked
+
+    # TODO visualization --> non so come gestirlo
+    '''
     # Visualize db_keypoints inliers and outliers
     if pnp_success: 
         for (new, old) in zip(inlier_tracked_points, inlier_points):
             a, b = new.ravel()
             c, d = old.ravel()
-            # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
-            current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
+            # new_frame_color = cv2.circle(new_frame_color, (int(a), int(b)), 5, (0, 255, 0), -1)  # Green for inliers
+            new_frame_color = cv2.line(new_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 255, 0), 2)
 
         for (new, old) in zip(outlier_tracked_points, outlier_points):
             a, b = new.ravel()
             c, d = old.ravel()
-            # current_frame_color = cv2.circle(current_frame_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
-            current_frame_color = cv2.line(current_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
+            # new_frame_color = cv2.circle(new_frame_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
+            new_frame_color = cv2.line(new_frame_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
+    '''
 
     # 4. Add new candidate keypoints
     if params['vo_continuous_detector'] == 'Shi-Tomasi':
-        new_corners = cv2.goodFeaturesToTrack(current_frame, 
+        new_corners = cv2.goodFeaturesToTrack(new_frame, 
                                               maxCorners=params['max_corners_continuous'], 
                                               qualityLevel=params['quality_level_continuous'], 
                                               minDistance=params['min_distance_continuous'])
     elif params['vo_continuous_detector'] == 'Harris':
-        new_corners = cv2.goodFeaturesToTrack(current_frame, 
+        new_corners = cv2.goodFeaturesToTrack(new_frame, 
                                               maxCorners=params['max_corners_continuous'],
                                               qualityLevel=params['quality_level_continuous'], 
                                               minDistance=params['min_distance_continuous'], 
@@ -571,7 +389,7 @@ def update_dashboard(
         plt.draw()
         plt.pause(0.01)  # short pause to allow the figure to update
 
-if __name__ == "__main__":
+def get_dataset(dataset):
     if dataset == Dataset.PARKING:
         images = sorted([f for f in os.listdir(file_relative_folder + params['relative_folder']) if f != "K.txt"])
         ground_truth = np.loadtxt(file_relative_folder + "/datasets/parking/poses.txt")
@@ -601,29 +419,32 @@ if __name__ == "__main__":
         K = np.array([[7.188560000000e+02, 0, 6.071928000000e+02],
                     [0, 7.188560000000e+02, 1.852157000000e+02],
                     [0, 0, 1]])
-        
+    
+    return images, ground_truth, last_frame, K
+
+def load_new_image(file_relative_folder, images):
+    if dataset == Dataset.PARKING:
+        new_image = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_COLOR)
+        new_image_gray = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_GRAYSCALE)
+    elif dataset == Dataset.MALAGA:
+        new_image = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_COLOR)
+        new_image_gray = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_GRAYSCALE)
+    elif dataset == Dataset.KITTI:
+        new_image = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_COLOR)
+        new_image_gray = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_GRAYSCALE)
+    return new_image, new_image_gray
+
+
+if __name__ == "__main__":
+    images, ground_truth, last_frame, K = get_dataset(dataset)
     
     frame2_color = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][1]], cv2.IMREAD_COLOR)
 
     frame1_gray = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][0]], cv2.IMREAD_GRAYSCALE)
     frame2_gray = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][1]], cv2.IMREAD_GRAYSCALE)
     
-    # Bootstrap
-    db_image, db_keypoints, db_landmarks, R, t = vo_bootstrap(frame2_color, frame1_gray, frame2_gray, K)
-    # db_landmarks is (3, N), transpose to (N, 3)
-    db_landmarks = db_landmarks.T
-
-    # Initialize the state dictionary
-    state = {
-        'db_image': db_image,
-        'P': db_keypoints,       # (N,1,2)
-        'X': db_landmarks,       # (N,3)
-        'R': R,
-        't': t,
-        'C': np.empty((0,1,2), dtype=np.float32), # No candidates yet
-        'F': np.empty((0,1,2), dtype=np.float32), # No first observations for candidates yet
-        'T': [] # No poses for candidates yet
-    }
+    # Bootstrap 
+    vo_bootstrap(frame2_color, frame1_gray, frame2_gray, K)
 
     # We'll keep track of the camera's *global* 2D positions (X, Z) or (X, Y) over time.
     # For simplicity, assume each new R,t is relative to the initial frame = Identity.
@@ -637,59 +458,23 @@ if __name__ == "__main__":
         plt.subplots_adjust(hspace=0.3, wspace=0.3)
 
     # Main loop
-    for i in range(params['bootstrap_frames'][1]+1, last_frame):  # short range for demonstration
-        # print(f"\nPROCESSING FRAME {i}")
-        # cmd = input("Press Enter to continue...")
-
-        if dataset == Dataset.PARKING:
-            new_image = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_COLOR)
-            new_image_gray = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_GRAYSCALE)
-        elif dataset == Dataset.MALAGA:
-            new_image = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_COLOR)
-            new_image_gray = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_GRAYSCALE)
-        elif dataset == Dataset.KITTI:
-            new_image = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_COLOR)
-            new_image_gray = cv2.imread(file_relative_folder + "/datasets/kitti/05/image_0/" + images[i], cv2.IMREAD_GRAYSCALE)
+    prev_image, prev_image_gray = frame2_color, frame2_gray
+    for i in range(params['bootstrap_frames'][1]+1, last_frame): 
+        new_image, new_image_gray = load_new_image(file_relative_folder, images)
 
         # Perform continuous VO step
-        state, pnp_success = vo_continuous(new_image, new_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
-
-        # Handle parameter adjustments based on PnP success
-        if pnp_success:
-            if consecutive_pnp_failures >= 1:
-                reset_params(params, base_params)
-                current_adjustment_step = 0  # Reset adjustment step
-            consecutive_pnp_failures = 0  # Reset failure counter
-        else:
-            consecutive_pnp_failures += 1
-            if consecutive_pnp_failures <= MAX_CONSECUTIVE_FAILURES and current_adjustment_step < len(adjustment_steps):
-                adjust_params(params, current_adjustment_step)
-                current_adjustment_step += 1
-            else:
-                print(f"Exceeded maximum consecutive PnP failures: {consecutive_pnp_failures}")
-                # Optionally, implement additional handling here (e.g., skip frame, reinitialize, etc.)
-        
-
+        state, pnp_success = vo_continuous(new_image, new_image_gray, prev_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
+        old_image_gray = new_image_gray
+        # TODO dashboard
         if plot_dashboard:
             # state['R'], state['t'] is the pose from the previous frame’s coordinate system
             R_new = state['R']
             t_new = state['t']
 
             t_dashboard = -np.matmul(R_new.T, t_new)
-            
-            # if len(full_trajectory) > 1:
-            #     distances = [np.linalg.norm(np.array(full_trajectory[j]) - np.array(full_trajectory[j-1])) for j in range(1, len(full_trajectory))]
-            #     avg_distance = np.mean(distances)
-            #     last_point = np.array(full_trajectory[-1])
-            #     current_point = np.array([t_dashboard[0], t_dashboard[2]])
-            #     if np.linalg.norm(current_point - last_point) < 200 * avg_distance:
-            #         full_trajectory.append((t_dashboard[0], t_dashboard[2]))
-            #     else:
-            #         print("Point not added to trajectory.")
-            # else:
+
             full_trajectory.append((t_dashboard[0], t_dashboard[2]))
                 
-
             # current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
             current_frame_color = new_image
             
@@ -712,16 +497,6 @@ if __name__ == "__main__":
                 landmark_counts=landmark_counts,
                 partial_window=20
             )
-    # plt.figure(figsize=(8, 6))
-    # xs = [point[0] for point in full_trajectory]
-    # ys = [point[1] for point in full_trajectory]
-    # plt.plot(xs, ys, marker='o', linestyle='-', color='b')
-    # plt.title('Full Trajectory')
-    # plt.xlabel('X')
-    # plt.ylabel('Z')
-    # plt.axis('equal')
-    # plt.grid(True)
-    
 
     # Finally, show everything at the end (block=True to keep the plots open)
     plt.ioff()
