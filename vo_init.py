@@ -6,7 +6,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from params_loader import load_parameters, Dataset
 
 # Set the dataset
-dataset = Dataset.PARKING  
+dataset = Dataset.MALAGA  
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
@@ -47,21 +47,22 @@ def vo_bootstrap(frame2_color, frame1, frame2, K):
 
     # Match keypoints
     bf = cv2.BFMatcher()
-    matches = bf.knnMatch(des1, des2, k=2) # TODO match_per_descriptors
+    matches = bf.knnMatch(des1, des2, k=2) 
 
     good_matches = []
     for m, n in matches:
-        if m.distance < params['ratio_test'] * n.distance:
+        if m.distance < 0.8 * n.distance:
             good_matches.append(m)
 
     # Get the keypoints from the good matches
     keypoints_frame_1 = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
     keypoints_frame_2 = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 2)
 
-    E, mask = cv2.findEssentialMat(keypoints_frame_1, keypoints_frame_2, K, method=cv2.RANSAC, prob=params['RANSAC_Essential_Matrix_confidence'], threshold=1) # TODO check parameters
+    E, mask = cv2.findEssentialMat(keypoints_frame_1, keypoints_frame_2, K, method=cv2.FM_RANSAC, prob=params['RANSAC_Essential_Matrix_confidence'], threshold=0.9) # TODO check parameters
 
     inliers_frame_1 = keypoints_frame_1[mask.ravel() == 1]
     inliers_frame_2 = keypoints_frame_2[mask.ravel() == 1]
+    '''
     outliers_frame_1 = keypoints_frame_1[mask.ravel() == 0]
     outliers_frame_2 = keypoints_frame_2[mask.ravel() == 0]
 
@@ -79,34 +80,27 @@ def vo_bootstrap(frame2_color, frame1, frame2, K):
         c, d = old.ravel()
         frame2_color = cv2.circle(frame2_color, (int(a), int(b)), 5, (0, 0, 255), -1)  # Red for outliers
         frame2_color = cv2.line(frame2_color, (int(a), int(b)), (int(c), int(d)), (0, 0, 255), 2)
-    
-    _, R, t, _ = cv2.recoverPose(E, keypoints_frame_1, keypoints_frame_2, K)
+    '''
+    _, R, t, _ = cv2.recoverPose(E, inliers_frame_1, inliers_frame_2, K)
 
     # Triangulate 3D points
-    P1 = K @ np.hstack((np.eye(3), np.zeros((3,1))))  # First frame pose
+    #P1 = K @ np.hstack((np.eye(3), np.zeros((3,1))))  # First frame pose
+    P1 = K @ np.eye(3,4)  # Second frame pose
     P2 = K @ np.hstack((R, t))  # Second frame pose
 
-    pts4D = cv2.triangulatePoints(P1, P2, keypoints_frame_1.T, keypoints_frame_2.T)
-    pts3D = pts4D[:3, :] / pts4D[3, :]  # shape (3, N)
+    pts4D = cv2.triangulatePoints(P1, P2, inliers_frame_1.T, inliers_frame_2.T)
+    pts3D = pts4D[:3, :] / pts4D[-1, :]  # shape (3, N)
 
     # TODO filter landmark behind the camera if Z < 0 for some reason
 
     # Update state
-    state["P"] = keypoints_frame_2.T 
+    state["P"] = inliers_frame_2.T 
     state["X"] = pts3D
 
     return
 
 
-def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmarks=150, min_baseline_angle=5.0):
-
-    cv2.imshow("frame2_color", new_frame_color)
-    cv2.waitKey(0)
-    cv2.imshow("frame1_gray", new_frame)
-    cv2.waitKey(0)
-    cv2.imshow("frame2_gray", prev_frame)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmarks):
 
     P_prev = state['P']
     X_prev = state['X']
@@ -115,7 +109,7 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
     triangulate = False 
     
     # 1. Track keypoints
-    tracked_keypoints, status, error = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, P_prev, nextPts=None, **lk_params)
+    tracked_keypoints, status, error = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, P_prev.T, nextPts=None, **lk_params)
     if error is not None:
         mask_kp = error < params['KLT_threshold']
         final_mask_kp = np.logical_and(mask_kp, status)
@@ -123,63 +117,66 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
         final_mask_kp = status
 
     P_tracked = tracked_keypoints[final_mask_kp.flatten() == 1]
-    X_tracked = X_prev[final_mask_kp.flatten() == 1] # TODO check dimensions
+    X_tracked = X_prev[:, final_mask_kp.flatten() == 1].T
 
     # 2. Track candidate keypoints
     if C_prev is not None:
-        C_tracked, status_c, error_c = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, state["C"], nextPts=None, **lk_params)
-        if error is not None:
+        C_tracked, status_c, error_c = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, state["C"].T.astype(np.float32), nextPts=None, **lk_params)
+        if error_c is not None:
             mask_c = error_c < params['KLT_threshold']
             final_mask_c = np.logical_and(mask_c, status_c)
         else:
             final_mask_c = status_c
         if C_tracked is not None:
-            state["C"] = C_tracked[:, final_mask_c == 1] # TODO controllare che C_tracked restituito sia un 2xM
+            C_tracked = C_tracked.T
+            state["C"] = C_tracked[:, final_mask_c.flatten() == 1] # TODO controllare che C_tracked restituito sia un 2xM
+            state["F"] = state["F"][:, final_mask_c.flatten() == 1]
+            state["T"] = state["T"][:, final_mask_c.flatten() == 1]
         
 
 
     # 3. Pose estimation with PnP
-    distCoeffs = np.zeros((4,1)) # TODO oppure none al posto di questo parametro
     if params['PnP_method'] == cv2.SOLVEPNP_ITERATIVE:
         success, rvec, tvec, inliers = cv2.solvePnPRansac(
-            X_tracked, P_tracked, K, distCoeffs,
+            X_tracked, P_tracked, K, None,
             reprojectionError=params['PnP_reprojection_error'],
             flags=params['PnP_method'],
             confidence=params['RANSAC_PnP_confidence'],
         )
     else:
         success, rvec, tvec, inliers = cv2.solvePnPRansac(
-            X_tracked, P_tracked, K, distCoeffs,
+            X_tracked, P_tracked, K, None,
             flags=params['PnP_method'],
             confidence=params['RANSAC_PnP_confidence'],
         )
     if success:
         R_new, _ = cv2.Rodrigues(rvec)
-        t_new = tvec # TODO tvec.flatten()
+        t_new = tvec.flatten()
         
         if inliers is not None:
-            inlier_mask = inliers.flatten() 
-            
+            inlier_mask = inliers.ravel() 
+            '''
             # Visualization: Inliers and outliers # TODO se vogliamo aggiungere qualcosa qua
             inliers_keypoints = P_tracked[inlier_mask]
             inliers_landmarks = X_tracked[inlier_mask]
 
             outliers_keypoints = P_tracked[~inlier_mask]
             outliers_landmarks = X_tracked[~inlier_mask]
+            '''
 
             P_tracked = P_tracked[inlier_mask]
             X_tracked = X_tracked[inlier_mask]
     else:
         print("PnP failed...keeping previous pose.")
 
-    inlier_ration = P_tracked.shape[0] / P_prev.shape[0] # TODO non fanno esattamente così ma dovrebbero fare così
-    max_inlier_ratio = 0.8 # TODO messo a caso
-    # TODO inliers ration
-    if X_tracked.shape[0] < min_landmarks or inlier_ration < max_inlier_ratio:
+    inlier_ratio = P_tracked.shape[0] / P_prev.shape[1] 
+    max_inlier_ratio = 0.3 
+    if X_tracked.shape[0] < min_landmarks or inlier_ratio < max_inlier_ratio:
         triangulate = True 
 
-    state["X"] = X_tracked
-    state["P"] = P_tracked
+    state["X"] = X_tracked.T 
+    state["P"] = P_tracked.T
+    
 
     # TODO visualization --> non so come gestirlo
     '''
@@ -210,18 +207,19 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
                                        blockSize=params['block_size_continuous'], 
                                        ksize=params['ksize_continuous'], 
                                        k=params['k_continuous'])
-    
+
     # select keypoints, TODO: check if it's really needed, otherwise delete
     r = params['radius_non_maxima_suppression']
+    keypoints = np.zeros((params['max_corners_continuous'], 2))
     temp_scores = np.pad(new_corners, [(r, r), (r, r)], mode='constant', constant_values=0)
-    for i in range(len(new_corners)):
+    for i in range(params['max_corners_continuous']):
         kp = np.unravel_index(temp_scores.argmax(), temp_scores.shape)
-        new_corners[i, :] = np.array(kp)[::-1] - r # reverse the order and remove padding
+        keypoints[i, :] = np.array(kp)[::-1] - r # reverse the order and remove padding
         temp_scores[(kp[0] - r):(kp[0] + r + 1), (kp[1] - r):(kp[1] + r + 1)] = 0
         
-    distances = np.linalg.norm(new_corners[:,None,:] - P_tracked.T, axis=2)
+    distances = np.linalg.norm(keypoints[:,None,:] - P_tracked, axis=2) # TODO tolto il trasposto
     is_close = np.any(distances < params["dist_treshold"], axis=1) # TODO settare il parametro correttamente
-    keypoints_filtered = new_corners[~is_close]
+    keypoints_filtered = keypoints[~is_close]
     
     if state["C"] is None:
         state["C"] = keypoints_filtered.T
@@ -232,7 +230,7 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
         state["F"] = keypoints_filtered.T
     else:
         state["F"] = np.concatenate((state["F"], keypoints_filtered.T), axis=1)
-    
+
     Tvec = np.hstack((R_new, t_new[:, None])).flatten()
     N = keypoints_filtered.shape[0]
 
@@ -245,10 +243,9 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
     # state, Rnew, tnew, K, triangulate
     current_pose = np.hstack((R_new, t_new[:, None]))
     poses_reshaped = state["T"].reshape(3, 4, state['C'].shape[1])
-    T_reshaped = state["T"][:,-1,:]
+    T_reshaped = poses_reshaped[:,-1,:]
     
     distances = np.linalg.norm(T_reshaped - t_new[:, None], axis=0)
-    max_distance = np.max(distances)
 
     # TODO change name of the following part fino alla fine
     avg_depth = np.mean((R_new @ state['X'] + t_new.reshape((t_new.shape[0], 1)))[2, :]) 
@@ -290,12 +287,9 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
             
             projected_new = cv2.projectPoints(points_3d, M1[:, :3], M1[:, 3:].flatten(), K, None)[0].reshape(-1, 2)
             projected_first = cv2.projectPoints(points_3d, M2[:, :3], M2[:, 3:].flatten(), K, None)[0].reshape(-1, 2)
-            reprojection_errors = (np.linalg.norm(state["F"].T - projected_new, axis=1) + np.linalg.norm(state["C"].T - projected_first, axis=1)) / 2
+            reprojection_errors = (np.linalg.norm(selected_first_obs_candidates.T - projected_new, axis=1) + np.linalg.norm(selected_candidates.T - projected_first, axis=1)) / 2
             
             points_3d_camera_frame = R_new @ points_3d + t_new[:, None]
-
-            # TODO: make this a function since it's called twice --> get landmark threshold
-
             
             threshold_x =  abs(np.mean(points_3d_camera_frame[0, :])) + distance_threshold_factor * abs(np.std(points_3d_camera_frame[0, :]))
             threshold_z = abs(np.mean(points_3d_camera_frame[2, :])) + distance_threshold_factor * abs(np.std(points_3d_camera_frame[2, :]))
@@ -319,13 +313,9 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
 
             # update X, P, C, F, T accordingly
             if new_landmarks is not None:
-                # TODO: check hstack vs concatenate
-                state["X"] = np.hstack((state["X"], new_landmarks))
-                state["P"] = np.hstack((state["P"], state["C"][:, ~filter_candidates_mask].astype(np.float32)))
+                state["X"] = np.concatenate((state["X"], new_landmarks), axis=1)
+                state["P"] = np.concatenate((state["P"], state["C"][:, ~filter_keypoints_mask].astype(np.float32)), axis=1)
 
-                # update C, F, T
-                # TODO update C con C ??
-                # TODO sintassi diversa
                 state["C"] = state["C"][:, filter_candidates_mask == 1]
                 state["F"] = state["F"][:, filter_candidates_mask == 1]
                 state["T"] = state["T"][:, filter_candidates_mask == 1]
@@ -338,7 +328,7 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
         plt.show()
 
     
-    return state
+    return state, R_new, t_new
 
 def update_dashboard(
         ax_img, ax_landmark_count, ax_trajectory_partial, ax_trajectory_full,
@@ -518,14 +508,10 @@ if __name__ == "__main__":
         new_image, new_image_gray = load_new_image(file_relative_folder, images)
 
         # Perform continuous VO step
-        state = vo_continuous(new_image, new_image_gray, prev_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
+        state, R_new, t_new = vo_continuous(new_image, new_image_gray, prev_image_gray, K, state, min_landmarks=120)
         old_image_gray = new_image_gray
         # TODO dashboard
         if plot_dashboard:
-            # state['R'], state['t'] is the pose from the previous frame’s coordinate system
-            R_new = state['R']
-            t_new = state['t']
-
             t_dashboard = -np.matmul(R_new.T, t_new)
 
             full_trajectory.append((t_dashboard[0], t_dashboard[2]))
@@ -535,7 +521,7 @@ if __name__ == "__main__":
             
             # Draw keypoints from state['P']
             if state['P'] is not None:
-                for pt in state['P']:
+                for pt in state['P'].T:
                     x, y = pt.ravel()
                     cv2.circle(current_frame_color, (int(x), int(y)), 3, (0, 255, 0), -1)
 
