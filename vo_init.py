@@ -20,7 +20,7 @@ def start_key_listener(fig):
     fig.canvas.mpl_connect('key_press_event', on_key_press)
 ################################################################
 ### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.KITTI  # or Dataset.PARKING or Dataset.MALAGA
+dataset = Dataset.MALAGA  # or Dataset.PARKING or Dataset.MALAGA
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
