@@ -6,7 +6,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from params_loader import load_parameters, Dataset
 
 # Set the dataset
-dataset = Dataset.MALAGA  
+dataset = Dataset.PARKING  
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
@@ -22,8 +22,7 @@ file_relative_folder = os.path.dirname(__file__)
 state = {
     'P': None,       # (2xN) - keypoints
     'X': None,       # (3xN) - landmarks
-    'R': None,       # (3x3) - rotation
-    't': None,       # (3x1) - translation,
+    "R": None,
     'C': None,       # (2xM) - candidate keypoints
     'F': None,       # (2xM) - first observation of candidate keypoints
     'T': None,       # (12xM) - poses for first observation of each candidate
@@ -34,6 +33,14 @@ lk_params = dict(winSize=params['winSize'],
         criteria=params['criteria'])
 
 def vo_bootstrap(frame2_color, frame1, frame2, K):
+    # cv2.imshow("frame2_color", frame2_color)
+    # cv2.waitKey(0)
+    # cv2.imshow("frame1_gray", frame1)
+    # cv2.waitKey(0)
+    # cv2.imshow("frame2_gray", frame2)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
     sift = cv2.SIFT_create()
     kp1, des1 = sift.detectAndCompute(frame1, None)
     kp2, des2 = sift.detectAndCompute(frame2, None)
@@ -87,20 +94,25 @@ def vo_bootstrap(frame2_color, frame1, frame2, K):
     # Update state
     state["P"] = keypoints_frame_2.T 
     state["X"] = pts3D
-    state["R"] = R
-    state["t"] = t
 
     return
 
 
 def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmarks=150, min_baseline_angle=5.0):
 
+    cv2.imshow("frame2_color", new_frame_color)
+    cv2.waitKey(0)
+    cv2.imshow("frame1_gray", new_frame)
+    cv2.waitKey(0)
+    cv2.imshow("frame2_gray", prev_frame)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
     P_prev = state['P']
     X_prev = state['X']
     C_prev = state['C']
 
-    R_prev = state['R']
-    t_prev = state['t']
+    triangulate = False 
     
     # 1. Track keypoints
     tracked_keypoints, status, error = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, P_prev, nextPts=None, **lk_params)
@@ -115,7 +127,7 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
 
     # 2. Track candidate keypoints
     if C_prev is not None:
-        C_tracked, status_c, error_c = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, C, nextPts=None, **lk_params)
+        C_tracked, status_c, error_c = cv2.calcOpticalFlowPyrLK(prev_frame, new_frame, state["C"], nextPts=None, **lk_params)
         if error is not None:
             mask_c = error_c < params['KLT_threshold']
             final_mask_c = np.logical_and(mask_c, status_c)
@@ -187,94 +199,136 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
     '''
 
     # 4. Add new candidate keypoints
-    if params['vo_continuous_detector'] == 'Shi-Tomasi':
-        new_corners = cv2.goodFeaturesToTrack(new_frame, 
-                                              maxCorners=params['max_corners_continuous'], 
-                                              qualityLevel=params['quality_level_continuous'], 
-                                              minDistance=params['min_distance_continuous'])
-    elif params['vo_continuous_detector'] == 'Harris':
-        new_corners = cv2.goodFeaturesToTrack(new_frame, 
-                                              maxCorners=params['max_corners_continuous'],
-                                              qualityLevel=params['quality_level_continuous'], 
-                                              minDistance=params['min_distance_continuous'], 
-                                              useHarrisDetector=True, 
-                                              k=params['k_continuous'])
+    # TODO: delete this eventually
+    # if params['vo_continuous_detector'] == 'Shi-Tomasi':
+    #     new_corners = cv2.goodFeaturesToTrack(new_frame, 
+    #                                           maxCorners=params['max_corners_continuous'], 
+    #                                           qualityLevel=params['quality_level_continuous'], 
+    #                                           minDistance=params['min_distance_continuous'])
+    if params['vo_continuous_detector'] == 'Harris':
+        new_corners = cv2.cornerHarris(new_frame, 
+                                       blockSize=params['block_size_continuous'], 
+                                       ksize=params['ksize_continuous'], 
+                                       k=params['k_continuous'])
     
-    if new_corners is not None:
-        if C.shape[0] > 0:
-            existing_points = np.vstack((P.reshape(-1,2), C.reshape(-1,2)))
-        else:
-            existing_points = P.reshape(-1,2)
+    # select keypoints, TODO: check if it's really needed, otherwise delete
+    r = params['radius_non_maxima_suppression']
+    temp_scores = np.pad(new_corners, [(r, r), (r, r)], mode='constant', constant_values=0)
+    for i in range(len(new_corners)):
+        kp = np.unravel_index(temp_scores.argmax(), temp_scores.shape)
+        new_corners[i, :] = np.array(kp)[::-1] - r # reverse the order and remove padding
+        temp_scores[(kp[0] - r):(kp[0] + r + 1), (kp[1] - r):(kp[1] + r + 1)] = 0
+        
+    distances = np.linalg.norm(new_corners[:,None,:] - P_tracked.T, axis=2)
+    is_close = np.any(distances < params["dist_treshold"], axis=1) # TODO settare il parametro correttamente
+    keypoints_filtered = new_corners[~is_close]
+    
+    if state["C"] is None:
+        state["C"] = keypoints_filtered.T
+    else:
+        state["C"] = np.concatenate((state["C"], keypoints_filtered.T), axis=1)
 
-        # Keep only the new corners that are not too close to existing points
-        dist_threshold = 8 #pixels
-        keep_idx = []
-        for i, cpt in enumerate(new_corners):
-            c_pt = cpt.ravel()
-            if existing_points.shape[0] > 0:
-                dists = np.sqrt(np.sum((existing_points - c_pt)**2, axis=1))
-                if np.all(dists > dist_threshold):
-                    keep_idx.append(i)
+    if state["F"] is None:
+        state["F"] = keypoints_filtered.T
+    else:
+        state["F"] = np.concatenate((state["F"], keypoints_filtered.T), axis=1)
+    
+    Tvec = np.hstack((R_new, t_new[:, None])).flatten()
+    N = keypoints_filtered.shape[0]
+
+    if state["T"] is None:
+        state["T"] = np.tile(Tvec, (N, 1)).T
+    else:
+        state["T"] = np.concatenate((state["T"], np.tile(Tvec, (N, 1)).T), axis=-1)
+
+    # T. Triangulate points
+    # state, Rnew, tnew, K, triangulate
+    current_pose = np.hstack((R_new, t_new[:, None]))
+    poses_reshaped = state["T"].reshape(3, 4, state['C'].shape[1])
+    T_reshaped = state["T"][:,-1,:]
+    
+    distances = np.linalg.norm(T_reshaped - t_new[:, None], axis=0)
+    max_distance = np.max(distances)
+
+    # TODO change name of the following part fino alla fine
+    avg_depth = np.mean((R_new @ state['X'] + t_new.reshape((t_new.shape[0], 1)))[2, :]) 
+
+    thumb_mask = distances / avg_depth > params['thumb_rule']
+    dist_mask = distances > params['distance_threshold']
+    mask = np.logical_or(thumb_mask, dist_mask)
+
+    possible_new_landmarks = np.sum(mask)
+
+    if possible_new_landmarks == 0 and triangulate:
+        mask = distances >= np.max(distances)
+
+    if possible_new_landmarks > 0 or triangulate:
+        prev_poses = state["T"][:,mask]
+        
+        unique_poses = np.unique(prev_poses, axis = 1)
+        new_landmarks = None
+
+        filter_candidates_mask = np.ones(state["T"].shape[1], dtype=bool)
+        filter_keypoints_mask = np.ones(state["T"].shape[1], dtype=bool)
+    
+        for pose in unique_poses.T:
+            indices = np.where(np.all(state["T"].T == pose, axis = 1))[0]
+
+            M1 = pose.reshape(3,4)
+            M2 = current_pose
+
+            selected_candidates = state["C"][:, indices].astype(np.float32)
+            selected_first_obs_candidates = state["F"][:, indices].astype(np.float32)
+        
+            points_3d_homogeneous = cv2.triangulatePoints(K @ M1, K @ M2, selected_first_obs_candidates, selected_candidates)
+            points_3d = points_3d_homogeneous[:3,:] / points_3d_homogeneous[-1, :]
+
+
+            # filter triangulated points
+            distance_threshold_factor = params['distance_threshold_factor']
+            min_reprojection_error = params['min_reprojection_error']
+            
+            projected_new = cv2.projectPoints(points_3d, M1[:, :3], M1[:, 3:].flatten(), K, None)[0].reshape(-1, 2)
+            projected_first = cv2.projectPoints(points_3d, M2[:, :3], M2[:, 3:].flatten(), K, None)[0].reshape(-1, 2)
+            reprojection_errors = (np.linalg.norm(state["F"].T - projected_new, axis=1) + np.linalg.norm(state["C"].T - projected_first, axis=1)) / 2
+            
+            points_3d_camera_frame = R_new @ points_3d + t_new[:, None]
+
+            # TODO: make this a function since it's called twice --> get landmark threshold
+
+            
+            threshold_x =  abs(np.mean(points_3d_camera_frame[0, :])) + distance_threshold_factor * abs(np.std(points_3d_camera_frame[0, :]))
+            threshold_z = abs(np.mean(points_3d_camera_frame[2, :])) + distance_threshold_factor * abs(np.std(points_3d_camera_frame[2, :]))
+
+            
+            valid_landmark_mask = \
+                (points_3d_camera_frame[0] < threshold_x) & \
+                (points_3d_camera_frame[2] > 0) & \
+                (points_3d_camera_frame[2] < np.min((threshold_z, 100))) & \
+                (reprojection_errors < min_reprojection_error) \
+                        
+            points_3d = points_3d[:,valid_landmark_mask]
+
+            if new_landmarks is None:
+                new_landmarks = points_3d
             else:
-                keep_idx.append(i)
+                new_landmarks = np.concatenate((new_landmarks, points_3d), axis=1)
 
-        if len(keep_idx) > 0:
-            new_candidates = new_corners[keep_idx]
+            filter_candidates_mask[indices] = False
+            filter_keypoints_mask[indices[valid_landmark_mask]] = False
 
-            if C.shape[0] > 0:
-                C = np.vstack((C, new_candidates))
-            else:
-                C = new_candidates
+            # update X, P, C, F, T accordingly
+            if new_landmarks is not None:
+                # TODO: check hstack vs concatenate
+                state["X"] = np.hstack((state["X"], new_landmarks))
+                state["P"] = np.hstack((state["P"], state["C"][:, ~filter_candidates_mask].astype(np.float32)))
 
-            # Store in F the first observation of the new candidates
-            # N.B. This is bcs C is going to be updated with the new positions
-            #      but we need to keep track of the first observation
-            if F_first.shape[0] > 0:
-                F_first = np.vstack((F_first, new_candidates))
-            else:
-                F_first = new_candidates
-
-            for _ in range(len(new_candidates)):
-                T_first.append((R_new.copy(), t_new.copy()))
-
-    # 5. Triangulate candidates if baseline angle is sufficient
-    if C.shape[0] > 0:
-        good_for_triangulation = []
-        for i in range(C.shape[0]):
-            c_current = C[i].reshape(1,2)
-            c_first = F_first[i].reshape(1,2)
-            R_f, t_f = T_first[i]
-
-            # Convert the keypoints to normalized camera coordinates
-            pt_current_norm = np.linalg.inv(K).dot(np.array([c_current[0,0], c_current[0,1], 1.0]))
-            pt_first_norm = np.linalg.inv(K).dot(np.array([c_first[0,0], c_first[0,1], 1.0]))
-
-            # Compute the angle between the 2 vectors (same fixed z=1, only u,v changes)
-            angle = np.degrees(np.arccos(
-                np.clip(np.dot(pt_current_norm/np.linalg.norm(pt_current_norm),
-                       pt_first_norm/np.linalg.norm(pt_first_norm)),-1.0,1.0)
-            ))
-
-            if angle > min_baseline_angle:
-                P_first = K @ np.hstack((R_f, t_f))
-                P_current = K @ np.hstack((R_new, t_new))
-                pts4D = cv2.triangulatePoints(P_first, P_current, c_first.T, c_current.T)
-                # It looks like it outputs already in camera world frame
-                # I tried multiplying by R_f.T and t_f, but it hallucinates, so probably wrong
-                # X_world = R_f.T @ (X_new - t_f)
-                X_new = (pts4D[:3] / pts4D[3]).T
-
-                # Update database
-                P = np.vstack((P, c_current.reshape(1,1,2)))
-                X = np.vstack((X, X_new))
-                good_for_triangulation.append(i)
-
-        if len(good_for_triangulation) > 0:
-            mask_keep = np.ones(C.shape[0], dtype=bool)
-            mask_keep[good_for_triangulation] = False
-            C = C[mask_keep]
-            F_first = F_first[mask_keep]
-            T_first = [T_first[j] for j in range(len(T_first)) if mask_keep[j]] 
+                # update C, F, T
+                # TODO update C con C ??
+                # TODO sintassi diversa
+                state["C"] = state["C"][:, filter_candidates_mask == 1]
+                state["F"] = state["F"][:, filter_candidates_mask == 1]
+                state["T"] = state["T"][:, filter_candidates_mask == 1]
     
     # Visualize the frame with tracked keypoints
     if plot_vo_continuous_inliers_outliers:
@@ -283,17 +337,8 @@ def vo_continuous(new_frame_color, new_frame, prev_frame, K, state, min_landmark
         plt.title('Inliers (Green) and Outliers (Red)')
         plt.show()
 
-    # Update the state
-    state['db_image'] = current_frame
-    state['P'] = P
-    state['X'] = X
-    state['C'] = C
-    state['F'] = F_first
-    state['T'] = T_first
-    state['R'] = R_new
-    state['t'] = t_new
-
-    return state, pnp_success
+    
+    return state
 
 def update_dashboard(
         ax_img, ax_landmark_count, ax_trajectory_partial, ax_trajectory_full,
@@ -399,6 +444,7 @@ def get_dataset(dataset):
         K = np.array([[331.37,   0,    320],
                     [  0,    369.568, 240],
                     [  0,      0,      1]])
+        return images, ground_truth, last_frame, K
     
     elif dataset == Dataset.MALAGA:
         images = sorted(os.listdir(file_relative_folder + params['relative_folder']))
@@ -419,8 +465,10 @@ def get_dataset(dataset):
         K = np.array([[7.188560000000e+02, 0, 6.071928000000e+02],
                     [0, 7.188560000000e+02, 1.852157000000e+02],
                     [0, 0, 1]])
-    
-    return images, ground_truth, last_frame, K
+        return images, ground_truth, last_frame, K
+
+    # MALAGA case
+    return images, None, last_frame, K
 
 def load_new_image(file_relative_folder, images):
     if dataset == Dataset.PARKING:
@@ -443,6 +491,13 @@ if __name__ == "__main__":
     frame1_gray = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][0]], cv2.IMREAD_GRAYSCALE)
     frame2_gray = cv2.imread(file_relative_folder + params['relative_folder'] + images[params['bootstrap_frames'][1]], cv2.IMREAD_GRAYSCALE)
     
+    # cv2.imshow("frame2_color", frame2_color)
+    # cv2.waitKey(0)
+    # cv2.imshow("frame1_gray", frame1_gray)
+    # cv2.waitKey(0)
+    # cv2.imshow("frame2_gray", frame2_gray)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
     # Bootstrap 
     vo_bootstrap(frame2_color, frame1_gray, frame2_gray, K)
 
@@ -453,9 +508,9 @@ if __name__ == "__main__":
     landmark_counts = []
     
     # For the live "dashboard", create one figure with 4 subplots
-    if plot_dashboard:
-        fig, ((ax_img, ax_traj_partial), (ax_landmark_count, ax_traj_full)) = plt.subplots(2,2, figsize=(10,8))
-        plt.subplots_adjust(hspace=0.3, wspace=0.3)
+    # if plot_dashboard:
+    #     fig, ((ax_img, ax_traj_partial), (ax_landmark_count, ax_traj_full)) = plt.subplots(2,2, figsize=(10,8))
+    #     plt.subplots_adjust(hspace=0.3, wspace=0.3)
 
     # Main loop
     prev_image, prev_image_gray = frame2_color, frame2_gray
@@ -463,7 +518,7 @@ if __name__ == "__main__":
         new_image, new_image_gray = load_new_image(file_relative_folder, images)
 
         # Perform continuous VO step
-        state, pnp_success = vo_continuous(new_image, new_image_gray, prev_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
+        state = vo_continuous(new_image, new_image_gray, prev_image_gray, K, state, min_landmarks=150, min_baseline_angle=params['min_baseline_angle'])
         old_image_gray = new_image_gray
         # TODO dashboard
         if plot_dashboard:
@@ -489,14 +544,14 @@ if __name__ == "__main__":
             landmark_counts.append(tracked_landmarks_count)
 
             # Update the dashboard
-            update_dashboard(
-                ax_img, ax_landmark_count, ax_traj_partial, ax_traj_full,
-                current_frame_color,
-                db_keypoints=state['P'],
-                full_trajectory=full_trajectory,
-                landmark_counts=landmark_counts,
-                partial_window=20
-            )
+            # update_dashboard(
+            #     ax_img, ax_landmark_count, ax_traj_partial, ax_traj_full,
+            #     current_frame_color,
+            #     db_keypoints=state['P'],
+            #     full_trajectory=full_trajectory,
+            #     landmark_counts=landmark_counts,
+            #     partial_window=20
+            # )
 
     # Finally, show everything at the end (block=True to keep the plots open)
     plt.ioff()

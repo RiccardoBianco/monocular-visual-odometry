@@ -15,6 +15,7 @@ parking_params_map = {
     "quality_level_bootstrap": 0.00001, # Harris and Shi-Tomasi
     "min_distance_bootstrap": 5, # Harris and Shi-Tomasi
     "k_bootstrap": 0.03, # Harris only
+    "ratio_test": 0.7, # Ratio test for feature matching
 
     # vo_continuous detector
     "vo_continuous_detector": "Harris", # or "Shi-Tomasi"
