@@ -5,28 +5,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from params_loader import load_parameters, Dataset
 
-################  DASHBOARD UTILITY  ############################
-# Define a global flag
-stop_pipeline = False
-
-
-def on_key_press(event):
-    global stop_pipeline
-    if event.key == ' ':
-        print("Stop signal received.")
-        stop_pipeline = True
-
-def start_key_listener(fig):
-    fig.canvas.mpl_connect('key_press_event', on_key_press)
-################################################################
-################################################################
-################################################################
-################################################################
-
-
 ### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.PARKING  # or Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI  or Dataset.MALAGA_ROUNDABOUT
-
+dataset = Dataset.KITTI  # Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI  or Dataset.MALAGA_ROUNDABOUT
 
 ################################################################
 ################################################################
@@ -47,32 +27,22 @@ lk_params = dict(winSize=params['winSize'],
     
 
 def vo_bootstrap(frame2_color, frame1, frame2, K):
-    # Load frames --> this gives problems
-    # frame1 = cv2.cvtColor(frame1_color, cv2.COLOR_BGR2GRAY)
-    # frame2 = cv2.cvtColor(frame2_color, cv2.COLOR_BGR2GRAY)
     
     # Detect keypoints in the first frame
-    # Harris returns the right transformation [1,0,0], Shi returns [-1,0,0], probably bcs from cam2 frame (?) although it should be the opposite
-    # quality-level: higher is stricter (discard all the ones with quality < x * max_quality)
     if params['bootstrap_detector'] == 'Shi-Tomasi':
         corners = cv2.goodFeaturesToTrack(frame1, 
                                           maxCorners=params['max_corners_bootstrap'], 
                                           qualityLevel=params['quality_level_bootstrap'], 
-                                          minDistance=params['min_distance_bootstrap']) # [-0.99,0.0,-0.04]
-        # corners = cv2.goodFeaturesToTrack(frame1, maxCorners=150, qualityLevel=0.000011, minDistance=5) # [0.93,-0.04,0.35]
+                                          minDistance=params['min_distance_bootstrap'])
     elif params['bootstrap_detector'] == 'Harris':
         corners = cv2.goodFeaturesToTrack(frame1, 
                                           maxCorners=params['max_corners_bootstrap'], 
                                           qualityLevel=params['quality_level_bootstrap'], 
                                           minDistance=params['min_distance_bootstrap'],
                                           useHarrisDetector=True,
-                                          k=params['k_bootstrap']) # [0.99,0.0,-0.12]
-        # Interesting fact to prove how sensitive these params are... 
-        # with minDistance=5 and k=0.03, it returns [ 0.99,0.0,-0.1]
-        # with minDistance=7 and k=0.03, it returns [-0.92,0.0, 0.3]...
+                                          k=params['k_bootstrap']) 
 
     # Track keypoints to the second frame
-    
     tracked_points, status, error = cv2.calcOpticalFlowPyrLK(frame1, frame2, corners, nextPts=None, **lk_params)
     if error is not None:
         valid_keypoints_mask = error < params['KLT_threshold']
@@ -101,7 +71,6 @@ def vo_bootstrap(frame2_color, frame1, frame2, K):
     # Compute essential matrix and pose
     E, mask = cv2.findEssentialMat(valid_corners, valid_tracked_corners, K, method=cv2.RANSAC, prob=params['RANSAC_Essential_Matrix_confidence'], threshold=1)
     _, R, t, mask_pose = cv2.recoverPose(E, valid_corners, valid_tracked_corners, K)
-    # t = -t
 
     # print("Rotation matrix: \n", R)
     # print("Translation vector: \n", t)
@@ -185,9 +154,6 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
     Returns:
     Updated state dictionary.
     """
-    # Load new frame
-    # current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
-    # current_frame = cv2.imread(new_frame_path, cv2.IMREAD_GRAYSCALE)
     
     prev_frame = state['db_image']
 
@@ -207,9 +173,7 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
             final_mask_db = np.logical_and(valid_keypoints_mask, status)
         else:
             final_mask_db = status
-        # num_errors_over_30 = np.sum(error > 30)
-        # print(f"Number of errors > 30: {num_errors_over_30}")
-        
+
         valid_idx = final_mask_db.flatten() == 1
         
         valid_corners = P[valid_idx]
@@ -229,8 +193,6 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
         else:
             final_mask_c = status_c
         
-        # valid_candidate_corners = C[final_mask_c == 1]
-
         valid_c_idx = final_mask_c.flatten() == 1
         C_tracked = C_tracked[valid_c_idx]
         F_first = F_first[valid_c_idx]
@@ -294,7 +256,6 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
         print("Not enough landmarks for PnP...keeping previous pose.")
 
     # Visualize db_keypoints inliers and outliers
-    # if inlier_tracked_points is not None and inlier_tracked_points.shape[0] > 0:
     for (new, old) in zip(inlier_tracked_points, inlier_points):
         a, b = new.ravel()
         c, d = old.ravel()
@@ -381,9 +342,6 @@ def vo_continuous(current_frame_color, current_frame, K, state, min_landmarks=15
                 P_first = K @ np.hstack((R_f, t_f))
                 P_current = K @ np.hstack((R_new, t_new))
                 pts4D = cv2.triangulatePoints(P_first, P_current, c_first.T, c_current.T)
-                # It looks like it outputs already in camera world frame
-                # I tried multiplying by R_f.T and t_f, but it hallucinates, so probably wrong
-                # X_world = R_f.T @ (X_new - t_f)
                 X_new = (pts4D[:3] / pts4D[3]).T
 
                 # Update database
@@ -482,15 +440,15 @@ def update_dashboard(
 
         # Plot ground truth trajectory
         ax_trajectory_full.clear()
-        """
-        if dataset != Dataset.MALAGA:
+        
+        if dataset != Dataset.MALAGA and dataset != Dataset.MALAGA_ROUNDABOUT:
             ground_truth_file = file_relative_folder + params['ground_truth_path']
             if os.path.exists(ground_truth_file):
                 ground_truth_data = np.loadtxt(ground_truth_file)
                 gt_xs = ground_truth_data[:, 3]
                 gt_zs = ground_truth_data[:, 11]
                 ax_trajectory_full.plot(gt_xs, gt_zs, 'r-', label='Ground Truth Trajectory')
-"""
+        
         # 4) Full trajectory
         if len(full_trajectory) > 0:
             xs_full = [p[0] for p in full_trajectory]
@@ -508,7 +466,6 @@ def update_dashboard(
         ax_landmark_count.set_box_aspect(1)
         ax_traj_full.set_box_aspect(1)
 
-        # plt.tight_layout()
         plt.draw()
         plt.pause(0.01)  # short pause to allow the figure to update
 
@@ -605,7 +562,6 @@ if __name__ == "__main__":
             print("Frame ", i,": t_dashboard\n", t_dashboard)
             full_trajectory.append((t_dashboard[0], t_dashboard[2]))
 
-            # current_frame_color = cv2.imread(new_frame_path, cv2.IMREAD_COLOR)
             current_frame_color = new_image
             
             # Draw keypoints from state['P']
@@ -628,17 +584,6 @@ if __name__ == "__main__":
                 partial_window=20,
                 frame_number= i
             )
-    # plt.figure(figsize=(8, 6))
-    # xs = [point[0] for point in full_trajectory]
-    # ys = [point[1] for point in full_trajectory]
-    # plt.plot(xs, ys, marker='o', linestyle='-', color='b')
-    # plt.title('Full Trajectory')
-    # plt.xlabel('X')
-    # plt.ylabel('Z')
-    # plt.axis('equal')
-    # plt.grid(True)
     
-
-    # Finally, show everything at the end (block=True to keep the plots open)
     plt.ioff()
     plt.show()
