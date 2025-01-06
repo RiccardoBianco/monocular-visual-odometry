@@ -6,7 +6,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from params_loader import load_parameters, Dataset
 
 ### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.KITTI  # Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI  or Dataset.MALAGA_ROUNDABOUT
+dataset = Dataset.PARKING  # Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI  or Dataset.MALAGA_ROUNDABOUT
 
 ################################################################
 ################################################################
