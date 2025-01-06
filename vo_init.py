@@ -19,8 +19,18 @@ def on_key_press(event):
 def start_key_listener(fig):
     fig.canvas.mpl_connect('key_press_event', on_key_press)
 ################################################################
+################################################################
+################################################################
+################################################################
+
+
 ### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.MALAGA  # or Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI
+dataset = Dataset.PARKING  # or Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI  or Dataset.MALAGA_ROUNDABOUT
+
+
+################################################################
+################################################################
+################################################################
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
@@ -513,7 +523,7 @@ if __name__ == "__main__":
                     [  0,    369.568, 240],
                     [  0,      0,      1]])
     
-    elif dataset == Dataset.MALAGA:
+    elif dataset == Dataset.MALAGA or dataset == Dataset.MALAGA_ROUNDABOUT:
         images = sorted(os.listdir(file_relative_folder + params['relative_folder']))
         left_images = images[2::2]
         images = left_images
@@ -575,7 +585,7 @@ if __name__ == "__main__":
         if dataset == Dataset.PARKING:
             new_image = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_COLOR)
             new_image_gray = cv2.imread(file_relative_folder + "/datasets/parking/images/" + images[i], cv2.IMREAD_GRAYSCALE)
-        elif dataset == Dataset.MALAGA:
+        elif dataset == Dataset.MALAGA or dataset == Dataset.MALAGA_ROUNDABOUT:
             new_image = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_COLOR)
             new_image_gray = cv2.imread(file_relative_folder + "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/" + images[i], cv2.IMREAD_GRAYSCALE)
         elif dataset == Dataset.KITTI:

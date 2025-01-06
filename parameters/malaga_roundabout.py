@@ -1,7 +1,7 @@
 import cv2
 
 
-malaga_params_map = {
+parking_params_map_roundabout = {
     "relative_folder": "/datasets/malaga-urban-dataset-extract-07/malaga-urban-dataset-extract-07_rectified_800x600_Images/",
     "bootstrap_frames": [550, 553], # seems optimal
     "bootstrap_detector": "Shi-Tomasi", # or "Shi-Tomasi"
