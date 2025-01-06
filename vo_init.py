@@ -20,7 +20,7 @@ def start_key_listener(fig):
     fig.canvas.mpl_connect('key_press_event', on_key_press)
 ################################################################
 ### Load parameters - CHANGE ONLY THIS ###
-dataset = Dataset.MALAGA  # or Dataset.PARKING or Dataset.MALAGA
+dataset = Dataset.MALAGA  # or Dataset.PARKING or Dataset.MALAGA or Dataset.KITTI
 
 ### Plotting options - eventually change these #######
 plot_bootstrap = False
@@ -411,7 +411,8 @@ def update_dashboard(
         ax_img, ax_landmark_count, ax_trajectory_partial, ax_trajectory_full,
         current_frame_color, db_keypoints, full_trajectory, 
         landmark_counts, 
-        partial_window=20
+        partial_window=20,
+        frame_number=0
     ):
         """
         Updates the four subplots in your dashboard.
@@ -443,7 +444,7 @@ def update_dashboard(
         # Convert BGR to RGB for matplotlib
         img_rgb = cv2.cvtColor(current_frame_color, cv2.COLOR_BGR2RGB)
         ax_img.imshow(img_rgb)
-        ax_img.set_title("Current image")
+        ax_img.set_title(f"Current image - Frame {frame_number}")  # Include frame number
         ax_img.set_aspect('equal', adjustable='box')
 
         # 2) # tracked landmarks over last partial_window frames
@@ -471,7 +472,7 @@ def update_dashboard(
 
         # Plot ground truth trajectory
         ax_trajectory_full.clear()
-
+        """
         if dataset != Dataset.MALAGA:
             ground_truth_file = file_relative_folder + params['ground_truth_path']
             if os.path.exists(ground_truth_file):
@@ -479,7 +480,7 @@ def update_dashboard(
                 gt_xs = ground_truth_data[:, 3]
                 gt_zs = ground_truth_data[:, 11]
                 ax_trajectory_full.plot(gt_xs, gt_zs, 'r-', label='Ground Truth Trajectory')
-
+"""
         # 4) Full trajectory
         if len(full_trajectory) > 0:
             xs_full = [p[0] for p in full_trajectory]
@@ -614,7 +615,8 @@ if __name__ == "__main__":
                 db_keypoints=state['P'],
                 full_trajectory=full_trajectory,
                 landmark_counts=landmark_counts,
-                partial_window=20
+                partial_window=20,
+                frame_number= i
             )
     # plt.figure(figsize=(8, 6))
     # xs = [point[0] for point in full_trajectory]
